@@ -6,13 +6,17 @@ Herramienta nativa (.pyt) que permite buscar una cadena de texto en los
 nombres de los shapefiles de una carpeta y reemplazarla por otro valor
 definido por el usuario.
 
-Renombra de forma automática e íntegra todos los archivos componentes:
-.shp, .shx, .dbf, .prj, .cpg, .sbn, .sbx, .shp.xml, .qpj, .cst, etc.
+Opciones incorporadas:
+- Renombrar en la misma carpeta original o guardar copia en una nueva ruta de salida.
+- Sobrescribir archivos existentes si ya existe un shapefile con el nuevo nombre.
+- Renombra de forma automática e íntegra todos los archivos componentes:
+  .shp, .shx, .dbf, .prj, .cpg, .sbn, .sbx, .shp.xml, .qpj, .cst, etc.
 """
 
 import os
 import sys
 import re
+import shutil
 import arcpy
 
 
@@ -33,15 +37,15 @@ def _validar_caracteres_prohibidos(texto):
     return encontrados
 
 
-def _renombrar_archivos_shapefile(directorio, base_old, base_new, sobrescribir=False):
+def _procesar_archivos_shapefile(dir_origen, dir_destino, base_old, base_new, sobrescribir=False):
     """
-    Renombra todos los archivos asociados al shapefile base_old por base_new
-    dentro del directorio indicado.
+    Renombra en la misma carpeta (in-place) o guarda una copia con nuevo nombre
+    en una carpeta de destino diferente.
     """
     prefix_old = base_old.lower() + "."
     prefix_new = base_new
 
-    archivos_en_carpeta = os.listdir(directorio)
+    archivos_en_carpeta = os.listdir(dir_origen)
 
     archivos_asociados = []
     for f in archivos_en_carpeta:
@@ -59,34 +63,48 @@ def _renombrar_archivos_shapefile(directorio, base_old, base_new, sobrescribir=F
     if not tiene_shp:
         return 0, f"No se encontró el archivo principal '{base_old}.shp'."
 
-    shp_nuevo = os.path.join(directorio, f"{base_new}.shp")
-    if os.path.exists(shp_nuevo) and not sobrescribir:
-        return 0, f"El shapefile destino '{base_new}.shp' ya existe en la carpeta."
+    es_nueva_ruta = (
+        dir_destino is not None 
+        and bool(dir_destino.strip()) 
+        and os.path.abspath(dir_destino).lower() != os.path.abspath(dir_origen).lower()
+    )
+    target_dir = dir_destino if es_nueva_ruta else dir_origen
 
-    renombrados = 0
+    if es_nueva_ruta:
+        os.makedirs(target_dir, exist_ok=True)
+
+    shp_nuevo = os.path.join(target_dir, f"{base_new}.shp")
+    if os.path.exists(shp_nuevo) and not sobrescribir:
+        ubicacion_txt = "en la carpeta de destino" if es_nueva_ruta else "en la carpeta original"
+        return 0, f"El shapefile destino '{base_new}.shp' ya existe {ubicacion_txt} (active la opción de sobrescribir para reemplazarlo)."
+
+    procesados = 0
     for old_name, new_name in archivos_asociados:
-        old_path = os.path.join(directorio, old_name)
-        new_path = os.path.join(directorio, new_name)
+        old_path = os.path.join(dir_origen, old_name)
+        new_path = os.path.join(target_dir, new_name)
 
         if os.path.exists(new_path):
-            if sobrescribir:
+            if sobrescribir and os.path.abspath(old_path).lower() != os.path.abspath(new_path).lower():
                 try:
                     os.remove(new_path)
                 except Exception as e:
                     raise PermissionError(f"No se pudo eliminar el archivo existente '{new_name}': {e}")
-            else:
+            elif not sobrescribir:
                 continue
 
         try:
-            os.rename(old_path, new_path)
-            renombrados += 1
+            if es_nueva_ruta:
+                shutil.copy2(old_path, new_path)
+            else:
+                os.rename(old_path, new_path)
+            procesados += 1
         except PermissionError:
             raise PermissionError(
                 f"El archivo '{old_name}' está bloqueado por ArcGIS Pro u otro programa. "
-                f"Cierre la capa en el mapa o remuévala antes de renombrar."
+                f"Cierre la capa en el mapa o remuévala antes de procesar."
             )
 
-    return renombrados, None
+    return procesados, None
 
 
 class Toolbox(object):
@@ -102,9 +120,9 @@ class ReemplazarTextoShapefiles(object):
         """Definición de la herramienta."""
         self.label = "Reemplazar Cadena de Texto en Nombres de SHP"
         self.description = (
-            "Busca una cadena de texto específica en los nombres de shapefiles de una "
-            "carpeta y la reemplaza por otro texto asignado por el usuario (renombrando "
-            ".shp, .dbf, .shx, .prj, .cpg, .shp.xml, etc.)."
+            "Busca una cadena de texto en los nombres de shapefiles de una carpeta y "
+            "la reemplaza por otro texto. Permite renombrar en el lugar o guardar en "
+            "una nueva carpeta, con opción de sobrescribir archivos existentes."
         )
         self.canRunInBackground = False
 
@@ -113,7 +131,7 @@ class ReemplazarTextoShapefiles(object):
         
         # Parámetro 0: Carpeta donde se ubican los Shapefiles
         param_folder = arcpy.Parameter(
-            displayName="Carpeta con Shapefiles",
+            displayName="Carpeta de Origen con Shapefiles",
             name="carpeta_shapefiles",
             datatype="DEFolder",
             parameterType="Required",
@@ -138,7 +156,26 @@ class ReemplazarTextoShapefiles(object):
             direction="Input"
         )
 
-        # Parámetro 3: Diferenciar mayúsculas de minúsculas
+        # Parámetro 3: Carpeta de destino (Opcional)
+        param_out_folder = arcpy.Parameter(
+            displayName="Carpeta de Destino (Opcional: guardar en nueva ruta)",
+            name="carpeta_destino",
+            datatype="DEFolder",
+            parameterType="Optional",
+            direction="Input"
+        )
+
+        # Parámetro 4: Opción de sobrescribir archivos existentes
+        param_overwrite = arcpy.Parameter(
+            displayName="Reemplazar / Sobrescribir archivos existentes si ya existen",
+            name="sobrescribir",
+            datatype="GPBoolean",
+            parameterType="Optional",
+            direction="Input"
+        )
+        param_overwrite.value = False
+
+        # Parámetro 5: Diferenciar mayúsculas de minúsculas
         param_case = arcpy.Parameter(
             displayName="Diferenciar mayúsculas de minúsculas (Sensible a mayúsculas)",
             name="case_sensitive",
@@ -148,7 +185,7 @@ class ReemplazarTextoShapefiles(object):
         )
         param_case.value = False
 
-        # Parámetro 4: Incluir subcarpetas
+        # Parámetro 6: Incluir subcarpetas
         param_sub = arcpy.Parameter(
             displayName="Incluir Subcarpetas",
             name="incluir_subcarpetas",
@@ -158,9 +195,9 @@ class ReemplazarTextoShapefiles(object):
         )
         param_sub.value = False
 
-        # Parámetro 5: Parámetro derivado de salida
+        # Parámetro 7: Parámetro derivado de salida
         param_out = arcpy.Parameter(
-            displayName="Carpeta Procesada",
+            displayName="Carpeta Resultante",
             name="carpeta_salida",
             datatype="DEFolder",
             parameterType="Derived",
@@ -168,7 +205,10 @@ class ReemplazarTextoShapefiles(object):
         )
         param_out.parameterDependencies = [param_folder.name]
 
-        return [param_folder, param_find, param_replace, param_case, param_sub, param_out]
+        return [
+            param_folder, param_find, param_replace, param_out_folder,
+            param_overwrite, param_case, param_sub, param_out
+        ]
 
     def isLicensed(self):
         return True
@@ -180,7 +220,7 @@ class ReemplazarTextoShapefiles(object):
         """Validaciones en tiempo real para los parámetros."""
         if parameters[0].altered and parameters[0].valueAsText:
             if not os.path.isdir(parameters[0].valueAsText):
-                parameters[0].setErrorMessage("La carpeta seleccionada no existe.")
+                parameters[0].setErrorMessage("La carpeta de origen seleccionada no existe.")
 
         if parameters[2].altered and parameters[2].valueAsText:
             prohibidos = _validar_caracteres_prohibidos(parameters[2].valueAsText)
@@ -194,11 +234,22 @@ class ReemplazarTextoShapefiles(object):
         folder_path = parameters[0].valueAsText
         texto_buscar = parameters[1].valueAsText
         texto_reemplazo = parameters[2].valueAsText or ""
-        case_sensitive = parameters[3].value
-        incluir_subcarpetas = parameters[4].value
+        carpeta_destino = parameters[3].valueAsText or None
+        sobrescribir_param = parameters[4].value
+        case_sensitive = parameters[5].value
+        incluir_subcarpetas = parameters[6].value
 
-        parameters[5].value = folder_path
-        sobrescribir = arcpy.env.overwriteOutput if hasattr(arcpy, "env") else False
+        # Considerar sobrescritura si el checkbox está activo o el entorno global de ArcGIS Pro lo indica
+        sobrescribir = bool(sobrescribir_param) or (hasattr(arcpy, "env") and bool(arcpy.env.overwriteOutput))
+
+        es_nueva_ruta = (
+            carpeta_destino is not None 
+            and bool(carpeta_destino.strip()) 
+            and os.path.abspath(carpeta_destino).lower() != os.path.abspath(folder_path).lower()
+        )
+        
+        carpeta_final = carpeta_destino if es_nueva_ruta else folder_path
+        parameters[7].value = carpeta_final
 
         texto_buscar = _limpiar_texto(texto_buscar)
         texto_reemplazo = _limpiar_texto(texto_reemplazo)
@@ -214,9 +265,14 @@ class ReemplazarTextoShapefiles(object):
 
         arcpy.AddMessage("=" * 65)
         arcpy.AddMessage("REEMPLAZO DE CADENA DE TEXTO EN NOMBRES DE SHAPEFILES")
-        arcpy.AddMessage(f"Carpeta:            {folder_path}")
+        arcpy.AddMessage(f"Carpeta Origen:     {folder_path}")
+        if es_nueva_ruta:
+            arcpy.AddMessage(f"Carpeta Destino:    {carpeta_destino} (Se guardarán copias renombradas)")
+        else:
+            arcpy.AddMessage("Modo de Salida:     Renombrado directo en la carpeta original")
         arcpy.AddMessage(f"Texto a buscar:     '{texto_buscar}'")
         arcpy.AddMessage(f"Texto de reemplazo: '{texto_reemplazo}'")
+        arcpy.AddMessage(f"Sobrescribir:       {'Sí' if sobrescribir else 'No'}")
         arcpy.AddMessage(f"Sensible a Mayús.:  {'Sí' if case_sensitive else 'No'}")
         arcpy.AddMessage(f"Subcarpetas:        {'Sí' if incluir_subcarpetas else 'No'}")
         arcpy.AddMessage("=" * 65)
@@ -234,7 +290,7 @@ class ReemplazarTextoShapefiles(object):
 
         total_shp_encontrados = 0
         total_coincidencias = 0
-        total_renombrados = 0
+        total_procesados = 0
         total_errores = 0
         total_omitidos = 0
 
@@ -244,6 +300,13 @@ class ReemplazarTextoShapefiles(object):
             except Exception as e:
                 arcpy.AddWarning(f"No se pudo acceder a la carpeta '{dir_actual}': {e}")
                 continue
+
+            # Determinar carpeta destino para este directorio (reproduciendo estructura si hay subcarpetas)
+            if es_nueva_ruta:
+                rel_path = os.path.relpath(dir_actual, folder_path)
+                dest_dir_actual = os.path.join(carpeta_destino, rel_path) if rel_path != "." else carpeta_destino
+            else:
+                dest_dir_actual = dir_actual
 
             shp_archivos = [f for f in archivos if f.lower().endswith(".shp")]
 
@@ -269,13 +332,17 @@ class ReemplazarTextoShapefiles(object):
                     total_omitidos += 1
                     continue
 
-                if base_new == base_old:
+                if base_new == base_old and not es_nueva_ruta:
                     total_omitidos += 1
                     continue
 
                 try:
-                    cant, err = _renombrar_archivos_shapefile(
-                        dir_actual, base_old, base_new, sobrescribir=sobrescribir
+                    cant, err = _procesar_archivos_shapefile(
+                        dir_origen=dir_actual,
+                        dir_destino=dest_dir_actual,
+                        base_old=base_old,
+                        base_new=base_new,
+                        sobrescribir=sobrescribir
                     )
                     if err:
                         arcpy.AddWarning(f"Aviso en '{base_old}': {err}")
@@ -283,25 +350,26 @@ class ReemplazarTextoShapefiles(object):
                     else:
                         rel_dir = os.path.relpath(dir_actual, folder_path)
                         dir_label = "" if rel_dir == "." else f"[{rel_dir}] "
-                        arcpy.AddMessage(f"{dir_label}'{base_old}.shp' -> '{base_new}.shp' ({cant} archivos asociados renombrados)")
-                        total_renombrados += 1
+                        accion_txt = "Copiado y renombrado" if es_nueva_ruta else "Renombrado"
+                        arcpy.AddMessage(f"{dir_label}'{base_old}.shp' -> '{base_new}.shp' ({accion_txt}: {cant} archivos asociados)")
+                        total_procesados += 1
                 except PermissionError as pe:
                     arcpy.AddError(f"ARCHIVO BLOQUEADO en '{base_old}': {pe}")
                     total_errores += 1
                 except Exception as e:
-                    arcpy.AddError(f"Error al renombrar '{base_old}': {e}")
+                    arcpy.AddError(f"Error al procesar '{base_old}': {e}")
                     total_errores += 1
 
         arcpy.AddMessage("\n" + "=" * 65)
-        arcpy.AddMessage("RESUMEN DE REEMPLAZO")
+        arcpy.AddMessage("RESUMEN DE PROCESAMIENTO")
         arcpy.AddMessage(f" - Shapefiles analizados:               {total_shp_encontrados}")
         arcpy.AddMessage(f" - Shapefiles con coincidencia de texto: {total_coincidencias}")
-        arcpy.AddMessage(f" - Shapefiles renombrados exitosamente: {total_renombrados}")
+        arcpy.AddMessage(f" - Shapefiles procesados exitosamente:  {total_procesados}")
         arcpy.AddMessage(f" - Shapefiles omitidos / sin cambios:   {total_omitidos}")
         arcpy.AddMessage(f" - Errores encontrados:                 {total_errores}")
         arcpy.AddMessage("=" * 65)
 
         try:
-            arcpy.RefreshCatalog(folder_path)
+            arcpy.RefreshCatalog(carpeta_final)
         except Exception:
             pass

@@ -6,12 +6,16 @@ Herramienta nativa para ArcGIS Pro (Python Toolbox .pyt) que permite
 renombrar masivamente shapefiles contenidos en una carpeta en función de
 un archivo Excel (.xlsx / .xls) de equivalencias.
 
-Renombra todos los archivos asociados a cada shapefile:
-.shp, .shx, .dbf, .prj, .cpg, .sbn, .sbx, .shp.xml, .qpj, .cst, etc.
+Opciones incorporadas:
+- Renombrar en la misma carpeta original o guardar copia en una nueva ruta de salida.
+- Sobrescribir archivos existentes si ya existe un shapefile con el nuevo nombre.
+- Renombra todos los archivos asociados a cada shapefile:
+  .shp, .shx, .dbf, .prj, .cpg, .sbn, .sbx, .shp.xml, .qpj, .cst, etc.
 """
 
 import os
 import sys
+import shutil
 import arcpy
 
 try:
@@ -37,14 +41,14 @@ def _limpiar_nombre(nombre):
     return texto
 
 
-def _renombrar_archivos(folder_path, base_old, base_new, sobrescribir=False):
+def _procesar_archivos(dir_origen, dir_destino, base_old, base_new, sobrescribir=False):
     """
-    Renombra todos los archivos que componen el shapefile en la carpeta dada.
+    Renombra en la misma carpeta o copia con el nuevo nombre en la carpeta de destino.
     """
     prefix_old = base_old.lower() + "."
     prefix_new = base_new
     
-    archivos_en_carpeta = os.listdir(folder_path)
+    archivos_en_carpeta = os.listdir(dir_origen)
     
     archivos_asociados = []
     for f in archivos_en_carpeta:
@@ -63,35 +67,48 @@ def _renombrar_archivos(folder_path, base_old, base_new, sobrescribir=False):
     if not tiene_shp:
         return 0, f"No se encontró el archivo principal '{base_old}.shp'."
 
-    # Verificar si el destino ya existe
-    shp_nuevo = os.path.join(folder_path, f"{base_new}.shp")
-    if os.path.exists(shp_nuevo) and not sobrescribir:
-        return 0, f"El shapefile destino '{base_new}.shp' ya existe en la carpeta."
+    es_nueva_ruta = (
+        dir_destino is not None 
+        and bool(dir_destino.strip()) 
+        and os.path.abspath(dir_destino).lower() != os.path.abspath(dir_origen).lower()
+    )
+    target_dir = dir_destino if es_nueva_ruta else dir_origen
 
-    renombrados = 0
+    if es_nueva_ruta:
+        os.makedirs(target_dir, exist_ok=True)
+
+    shp_nuevo = os.path.join(target_dir, f"{base_new}.shp")
+    if os.path.exists(shp_nuevo) and not sobrescribir:
+        ubicacion_txt = "en la carpeta de destino" if es_nueva_ruta else "en la carpeta original"
+        return 0, f"El shapefile destino '{base_new}.shp' ya existe {ubicacion_txt} (active sobrescribir para reemplazarlo)."
+
+    procesados = 0
     for old_name, new_name in archivos_asociados:
-        old_path = os.path.join(folder_path, old_name)
-        new_path = os.path.join(folder_path, new_name)
+        old_path = os.path.join(dir_origen, old_name)
+        new_path = os.path.join(target_dir, new_name)
         
         if os.path.exists(new_path):
-            if sobrescribir:
+            if sobrescribir and os.path.abspath(old_path).lower() != os.path.abspath(new_path).lower():
                 try:
                     os.remove(new_path)
                 except Exception as e:
                     raise PermissionError(f"No se pudo eliminar el archivo existente '{new_name}': {e}")
-            else:
+            elif not sobrescribir:
                 continue
 
         try:
-            os.rename(old_path, new_path)
-            renombrados += 1
+            if es_nueva_ruta:
+                shutil.copy2(old_path, new_path)
+            else:
+                os.rename(old_path, new_path)
+            procesados += 1
         except PermissionError:
             raise PermissionError(
                 f"El archivo '{old_name}' está bloqueado por ArcGIS Pro u otro programa. "
                 f"Remueva la capa del mapa o cierre el proyecto e intente nuevamente."
             )
 
-    return renombrados, None
+    return procesados, None
 
 
 def _leer_pares_excel(excel_path, sheet_name=None, col_old=None, col_new=None):
@@ -99,7 +116,6 @@ def _leer_pares_excel(excel_path, sheet_name=None, col_old=None, col_new=None):
     if not os.path.exists(excel_path):
         raise FileNotFoundError(f"No se encontró el archivo Excel: {excel_path}")
 
-    # Prioridad 1: pandas (incluido en el entorno de ArcGIS Pro)
     if HAS_PANDAS:
         sheet = sheet_name if sheet_name else 0
         df = pd.read_excel(excel_path, sheet_name=sheet)
@@ -165,7 +181,6 @@ def _leer_pares_excel(excel_path, sheet_name=None, col_old=None, col_new=None):
                 pares.append((antiguo, nuevo))
         return pares
 
-    # Prioridad 2: openpyxl
     elif HAS_OPENPYXL:
         wb = openpyxl.load_workbook(excel_path, data_only=True)
         sheet = wb[sheet_name] if sheet_name and sheet_name in wb.sheetnames else wb.active
@@ -222,9 +237,9 @@ class RenombrarShapefiles(object):
         """Definición de la herramienta."""
         self.label = "Renombrar Shapefiles con Excel"
         self.description = (
-            "Renombra múltiples shapefiles (.shp y todos sus archivos asociados como "
-            ".shx, .dbf, .prj, .cpg, .shp.xml, etc.) en una carpeta usando una tabla "
-            "de equivalencias en Excel."
+            "Renombra múltiples shapefiles en una carpeta usando una tabla de "
+            "equivalencias en Excel. Permite renombrar en el lugar o guardar en una nueva "
+            "carpeta, con opción de sobrescribir archivos existentes."
         )
         self.canRunInBackground = False
 
@@ -233,7 +248,7 @@ class RenombrarShapefiles(object):
         
         # Parámetro 0: Carpeta donde se ubican los Shapefiles
         param_folder = arcpy.Parameter(
-            displayName="Carpeta con Shapefiles",
+            displayName="Carpeta de Origen con Shapefiles",
             name="carpeta_shapefiles",
             datatype="DEFolder",
             parameterType="Required",
@@ -250,7 +265,26 @@ class RenombrarShapefiles(object):
         )
         param_excel.filter.list = ["xlsx", "xls"]
 
-        # Parámetro 2: Hoja del Excel (opcional)
+        # Parámetro 2: Carpeta de destino (Opcional)
+        param_out_folder = arcpy.Parameter(
+            displayName="Carpeta de Destino (Opcional: guardar en nueva ruta)",
+            name="carpeta_destino",
+            datatype="DEFolder",
+            parameterType="Optional",
+            direction="Input"
+        )
+
+        # Parámetro 3: Opción de sobrescribir
+        param_overwrite = arcpy.Parameter(
+            displayName="Reemplazar / Sobrescribir archivos existentes si ya existen",
+            name="sobrescribir",
+            datatype="GPBoolean",
+            parameterType="Optional",
+            direction="Input"
+        )
+        param_overwrite.value = False
+
+        # Parámetro 4: Hoja del Excel (opcional)
         param_sheet = arcpy.Parameter(
             displayName="Hoja de Excel (Opcional)",
             name="hoja_excel",
@@ -259,7 +293,7 @@ class RenombrarShapefiles(object):
             direction="Input"
         )
 
-        # Parámetro 3: Columna con el nombre original/antiguo
+        # Parámetro 5: Columna con el nombre original/antiguo
         param_col_old = arcpy.Parameter(
             displayName="Columna de Nombre Antiguo (Opcional)",
             name="columna_antiguo",
@@ -269,7 +303,7 @@ class RenombrarShapefiles(object):
         )
         param_col_old.value = "nombre_antiguo"
 
-        # Parámetro 4: Columna con el nombre nuevo
+        # Parámetro 6: Columna con el nombre nuevo
         param_col_new = arcpy.Parameter(
             displayName="Columna de Nombre Nuevo (Opcional)",
             name="columna_nuevo",
@@ -279,9 +313,9 @@ class RenombrarShapefiles(object):
         )
         param_col_new.value = "nombre_nuevo"
 
-        # Parámetro 5: Parámetro derivado para encadenar en ModelBuilder
+        # Parámetro 7: Parámetro derivado de salida
         param_out = arcpy.Parameter(
-            displayName="Carpeta de Salida",
+            displayName="Carpeta Resultante",
             name="carpeta_salida",
             datatype="DEFolder",
             parameterType="Derived",
@@ -289,10 +323,12 @@ class RenombrarShapefiles(object):
         )
         param_out.parameterDependencies = [param_folder.name]
 
-        return [param_folder, param_excel, param_sheet, param_col_old, param_col_new, param_out]
+        return [
+            param_folder, param_excel, param_out_folder, param_overwrite,
+            param_sheet, param_col_old, param_col_new, param_out
+        ]
 
     def isLicensed(self):
-        """Verifica si la herramienta tiene licencia para ejecutarse."""
         return True
 
     def updateParameters(self, parameters):
@@ -304,15 +340,13 @@ class RenombrarShapefiles(object):
                     import openpyxl
                     wb = openpyxl.load_workbook(excel_path, read_only=True)
                     sheet_names = wb.sheetnames
-                    parameters[2].filter.list = sheet_names
+                    parameters[4].filter.list = sheet_names
 
-                    # Asignar primera hoja si no está definida
-                    curr_sheet = parameters[2].valueAsText
+                    curr_sheet = parameters[4].valueAsText
                     if not curr_sheet or curr_sheet not in sheet_names:
                         curr_sheet = sheet_names[0]
-                        parameters[2].value = curr_sheet
+                        parameters[4].value = curr_sheet
 
-                    # Leer encabezados de columnas de la hoja activa
                     sheet = wb[curr_sheet]
                     headers = [
                         str(cell.value).strip() 
@@ -322,11 +356,10 @@ class RenombrarShapefiles(object):
                     wb.close()
 
                     if headers:
-                        parameters[3].filter.list = headers
-                        parameters[4].filter.list = headers
+                        parameters[5].filter.list = headers
+                        parameters[6].filter.list = headers
 
-                        # Auto-seleccionar si coincide con nombres comunes
-                        val_old = parameters[3].valueAsText
+                        val_old = parameters[5].valueAsText
                         if not val_old or val_old not in headers:
                             old_matches = [
                                 h for h in headers if h.lower() in [
@@ -334,9 +367,9 @@ class RenombrarShapefiles(object):
                                     "old_name", "old", "original", "anterior"
                                 ]
                             ]
-                            parameters[3].value = old_matches[0] if old_matches else headers[0]
+                            parameters[5].value = old_matches[0] if old_matches else headers[0]
 
-                        val_new = parameters[4].valueAsText
+                        val_new = parameters[6].valueAsText
                         if not val_new or val_new not in headers:
                             new_matches = [
                                 h for h in headers if h.lower() in [
@@ -345,37 +378,50 @@ class RenombrarShapefiles(object):
                                 ]
                             ]
                             if new_matches:
-                                parameters[4].value = new_matches[0]
+                                parameters[6].value = new_matches[0]
                             elif len(headers) > 1:
-                                parameters[4].value = headers[1]
+                                parameters[6].value = headers[1]
                 except Exception:
                     pass
 
     def updateMessages(self, parameters):
-        """Validaciones en tiempo real para la interfaz de usuario."""
         if parameters[0].altered and parameters[0].valueAsText:
             if not os.path.isdir(parameters[0].valueAsText):
-                parameters[0].setErrorMessage("La carpeta seleccionada no existe.")
+                parameters[0].setErrorMessage("La carpeta de origen seleccionada no existe.")
 
         if parameters[1].altered and parameters[1].valueAsText:
             if not os.path.isfile(parameters[1].valueAsText):
                 parameters[1].setErrorMessage("El archivo Excel seleccionado no existe.")
 
     def execute(self, parameters, messages):
-        """Código de ejecución principal de la herramienta en ArcGIS Pro."""
+        """Código de ejecución de la herramienta."""
         folder_path = parameters[0].valueAsText
         excel_path = parameters[1].valueAsText
-        sheet_name = parameters[2].valueAsText or None
-        col_old = parameters[3].valueAsText or None
-        col_new = parameters[4].valueAsText or None
+        carpeta_destino = parameters[2].valueAsText or None
+        sobrescribir_param = parameters[3].value
+        sheet_name = parameters[4].valueAsText or None
+        col_old = parameters[5].valueAsText or None
+        col_new = parameters[6].valueAsText or None
 
-        parameters[5].value = folder_path
-        sobrescribir = arcpy.env.overwriteOutput if hasattr(arcpy, "env") else False
+        sobrescribir = bool(sobrescribir_param) or (hasattr(arcpy, "env") and bool(arcpy.env.overwriteOutput))
+
+        es_nueva_ruta = (
+            carpeta_destino is not None 
+            and bool(carpeta_destino.strip()) 
+            and os.path.abspath(carpeta_destino).lower() != os.path.abspath(folder_path).lower()
+        )
+        carpeta_final = carpeta_destino if es_nueva_ruta else folder_path
+        parameters[7].value = carpeta_final
 
         arcpy.AddMessage("=" * 65)
-        arcpy.AddMessage("INICIANDO RENOMBRADO MASIVO DE SHAPEFILES")
-        arcpy.AddMessage(f"Carpeta: {folder_path}")
-        arcpy.AddMessage(f"Excel:   {excel_path}")
+        arcpy.AddMessage("INICIANDO RENOMBRADO MASIVO DE SHAPEFILES CON EXCEL")
+        arcpy.AddMessage(f"Carpeta Origen:  {folder_path}")
+        if es_nueva_ruta:
+            arcpy.AddMessage(f"Carpeta Destino: {carpeta_destino} (Se guardarán copias renombradas)")
+        else:
+            arcpy.AddMessage("Modo de Salida:  Renombrado directo en la carpeta original")
+        arcpy.AddMessage(f"Excel:           {excel_path}")
+        arcpy.AddMessage(f"Sobrescribir:    {'Sí' if sobrescribir else 'No'}")
         arcpy.AddMessage("=" * 65)
 
         try:
@@ -392,28 +438,33 @@ class RenombrarShapefiles(object):
         errores = 0
 
         for idx, (old_name, new_name) in enumerate(pares, 1):
-            if old_name.lower() == new_name.lower() and old_name == new_name:
+            if old_name.lower() == new_name.lower() and old_name == new_name and not es_nueva_ruta:
                 arcpy.AddMessage(f"[{idx}/{len(pares)}] OMITIDO: '{old_name}' no requiere cambio de nombre.")
                 omitidos += 1
                 continue
 
             try:
-                cant_renombrada, detalle_error = _renombrar_archivos(
-                    folder_path, old_name, new_name, sobrescribir=sobrescribir
+                cant_proc, detalle_error = _procesar_archivos(
+                    dir_origen=folder_path,
+                    dir_destino=carpeta_destino,
+                    base_old=old_name,
+                    base_new=new_name,
+                    sobrescribir=sobrescribir
                 )
 
                 if detalle_error:
                     err_l = detalle_error.lower()
                     if "no se encontr" in err_l:
-                        arcpy.AddWarning(f"[{idx}/{len(pares)}] NO ENCONTRADO: '{old_name}.shp' no está en la carpeta.")
+                        arcpy.AddWarning(f"[{idx}/{len(pares)}] NO ENCONTRADO: '{old_name}.shp' no está en la carpeta de origen.")
                         no_encontrados += 1
                     elif "ya existe" in err_l:
-                        arcpy.AddWarning(f"[{idx}/{len(pares)}] OMITIDO: '{new_name}.shp' ya existe en la carpeta.")
+                        arcpy.AddWarning(f"[{idx}/{len(pares)}] OMITIDO: '{new_name}.shp' ya existe en destino.")
                         omitidos += 1
                     else:
                         arcpy.AddWarning(f"[{idx}/{len(pares)}] AVISO ({old_name}): {detalle_error}")
                 else:
-                    arcpy.AddMessage(f"[{idx}/{len(pares)}] RENOMBRADO CON ÉXITO: '{old_name}' -> '{new_name}' ({cant_renombrada} archivos asociados)")
+                    accion_txt = "Copiado y renombrado" if es_nueva_ruta else "Renombrado"
+                    arcpy.AddMessage(f"[{idx}/{len(pares)}] {accion_txt.upper()}: '{old_name}' -> '{new_name}' ({cant_proc} archivos asociados)")
                     exitosos += 1
 
             except PermissionError as pe:
@@ -425,14 +476,13 @@ class RenombrarShapefiles(object):
 
         arcpy.AddMessage("\n" + "=" * 65)
         arcpy.AddMessage("RESUMEN DEL PROCESO")
-        arcpy.AddMessage(f" - Shapefiles renombrados exitosamente: {exitosos}")
+        arcpy.AddMessage(f" - Shapefiles procesados exitosamente: {exitosos}")
         arcpy.AddMessage(f" - Shapefiles no encontrados:          {no_encontrados}")
         arcpy.AddMessage(f" - Shapefiles omitidos / sin cambios:   {omitidos}")
         arcpy.AddMessage(f" - Errores encontrados:                 {errores}")
         arcpy.AddMessage("=" * 65)
 
-        # Refrescar la vista del Catálogo si está disponible
         try:
-            arcpy.RefreshCatalog(folder_path)
+            arcpy.RefreshCatalog(carpeta_final)
         except Exception:
             pass
