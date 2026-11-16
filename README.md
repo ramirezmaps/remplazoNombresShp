@@ -6,17 +6,18 @@ Repositorio con herramientas tipo **Python Toolbox (`.pyt`)** y scripts independ
 
 ## 📦 Herramientas Incluidas en este Repositorio
 
-### 1. `ReemplazarElementosLayout.pyt` — Modificación masiva de Layouts en un APRX (¡NUEVO!)
-Permite buscar y reemplazar de forma masiva elementos dentro de todos los layouts (o un layout específico) de un proyecto de ArcGIS Pro:
+### 1. `ReemplazarElementosLayout.pyt` — Modificación y Exportación Masiva de Layouts (¡ACTUALIZADO!)
+Permite buscar y reemplazar de forma masiva elementos dentro de los layouts y/o **exportar todos los layouts a una carpeta**:
 * **Textos:** Busca y reemplaza palabras, frases, fechas, autores, códigos de proyecto o títulos en cuadros de texto, membretes y notas.
 * **Imágenes / Logos:** Sustituye la ruta del archivo de imagen para actualizar logos de empresas, clientes o encabezados gráficos.
 * **Marcos de Mapa (Map Frames):** Reasigna el mapa asociado al marco de mapa.
+* **Exportación Masiva:** Exporta todos los layouts (o filtrados) a una carpeta en formato **PDF**, **JPEG**, **PNG** o **TIFF** con resolución (DPI) personalizable.
 
-**Características principales:**
-- **Proyecto actual o externo:** Funciona por defecto sobre el proyecto activo (`"CURRENT"`) o seleccionando un archivo `.aprx` en disco.
+**Modos de uso:**
+- **Solo Exportar:** Selecciona la acción *"Ninguno (Solo Exportar)"*, elige la carpeta de salida, el formato (ej. PDF) y los DPI para generar los archivos de todos los layouts de una sola vez.
+- **Reemplazar y Exportar:** Puedes reemplazar textos o logos y al mismo tiempo indicar la carpeta de exportación para obtener los layouts ya actualizados y listos para entrega.
 - **Alcance flexible:** Aplica a `* (Todos los Layouts)` del proyecto o permite seleccionar uno específico desde un desplegable.
-- **Filtro por elemento:** Permite filtrar por el nombre del elemento en el panel de contenido o actuar sobre todos los elementos del tipo elegido.
-- **Guardado seguro:** En el proyecto activo, aplica los cambios en memoria para que puedas revisarlos en la vista de layout y guardar manualmente con `Ctrl+S`, o activar la casilla de guardado automático.
+- **Proyecto activo o externo:** Funciona por defecto sobre el proyecto abierto (`"CURRENT"`) o seleccionando un archivo `.aprx` en disco.
 
 ---
 

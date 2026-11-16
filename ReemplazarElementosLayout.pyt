@@ -1,20 +1,58 @@
 # -*- coding: utf-8 -*-
 """
-Toolbox de ArcGIS Pro: Reemplazar Elementos en Layouts del Proyecto (.aprx)
-==========================================================================
-Herramienta nativa (.pyt) que permite buscar y reemplazar de forma masiva
-elementos en todos los layouts (o uno específico) de un proyecto de ArcGIS Pro.
-
-Soporta:
-- Textos: Títulos, notas, membretes, escalas de texto, descripciones, etc.
-- Imágenes / Logos: Actualización de la ruta de imágenes y logos institucionales.
-- Map Frames: Reasignación de mapas asociados a los marcos de mapa del layout.
+Toolbox de ArcGIS Pro: Reemplazar Elementos y Exportar Layouts del Proyecto (.aprx)
+==================================================================================
+Herramienta nativa (.pyt) que permite:
+1. Buscar y reemplazar textos en títulos, notas y membretes.
+2. Actualizar logos e imágenes institucionales.
+3. Reasignar mapas vinculados a marcos de mapa (Map Frames).
+4. Exportar de forma masiva todos los layouts (o uno seleccionado) a una carpeta
+   específica en formato PDF, JPEG, PNG o TIFF con resolución configurable.
 """
 
 import os
 import sys
 import re
 import arcpy
+
+
+def _exportar_layouts(layouts, carpeta_export, formato="PDF", dpi=300):
+    """Exporta los layouts indicados a la carpeta especificada."""
+    os.makedirs(carpeta_export, exist_ok=True)
+    fmt = (formato or "PDF").upper().strip()
+    dpi = int(dpi) if dpi else 300
+    exportados = 0
+
+    arcpy.AddMessage("\n" + "-" * 50)
+    arcpy.AddMessage(f"EXPORTANDO LAYOUTS A: {carpeta_export}")
+    arcpy.AddMessage(f"Formato: {fmt} | Resolución: {dpi} DPI")
+    arcpy.AddMessage("-" * 50)
+
+    for lyt in layouts:
+        safe_name = re.sub(r'[\\/*?:"<>|]', "_", lyt.name)
+        try:
+            if fmt == "PDF":
+                out_path = os.path.join(carpeta_export, f"{safe_name}.pdf")
+                lyt.exportToPDF(out_path, resolution=dpi)
+            elif fmt in ("JPEG", "JPG"):
+                out_path = os.path.join(carpeta_export, f"{safe_name}.jpg")
+                lyt.exportToJPEG(out_path, resolution=dpi)
+            elif fmt == "PNG":
+                out_path = os.path.join(carpeta_export, f"{safe_name}.png")
+                lyt.exportToPNG(out_path, resolution=dpi)
+            elif fmt in ("TIFF", "TIF"):
+                out_path = os.path.join(carpeta_export, f"{safe_name}.tif")
+                lyt.exportToTIFF(out_path, resolution=dpi)
+            else:
+                out_path = os.path.join(carpeta_export, f"{safe_name}.pdf")
+                lyt.exportToPDF(out_path, resolution=dpi)
+
+            arcpy.AddMessage(f" -> Exportado: '{lyt.name}' -> {os.path.basename(out_path)}")
+            exportados += 1
+        except Exception as e:
+            arcpy.AddWarning(f"Error al exportar layout '{lyt.name}': {e}")
+
+    return exportados
 
 
 def _procesar_elementos(
@@ -27,7 +65,10 @@ def _procesar_elementos(
     case_sensitive,
     nueva_imagen_path,
     nuevo_mapa_nombre,
-    guardar_cambios
+    guardar_cambios,
+    carpeta_export,
+    formato_export,
+    dpi_export
 ):
     es_current = False
     if not aprx_path or not str(aprx_path).strip() or str(aprx_path).upper() == "CURRENT":
@@ -50,12 +91,14 @@ def _procesar_elementos(
             return False
 
     arcpy.AddMessage("=" * 65)
-    arcpy.AddMessage("REEMPLAZO DE ELEMENTOS EN LAYOUTS DE ARCGIS PRO")
+    arcpy.AddMessage("HERRAMIENTA DE MODIFICACIÓN Y EXPORTACIÓN DE LAYOUTS")
     arcpy.AddMessage(f"Proyecto:           {proyecto_nombre}")
-    arcpy.AddMessage(f"Tipo de Elemento:   {tipo_elemento}")
+    arcpy.AddMessage(f"Tipo de Acción:     {tipo_elemento}")
     arcpy.AddMessage(f"Filtro de Layout:   {layout_filtro or '* (Todos los Layouts)'}")
     if nombre_elemento_filtro and nombre_elemento_filtro.strip():
         arcpy.AddMessage(f"Filtro de Elemento: '{nombre_elemento_filtro}'")
+    if carpeta_export and carpeta_export.strip():
+        arcpy.AddMessage(f"Exportación activa: Sí ({formato_export} @ {dpi_export} DPI)")
     arcpy.AddMessage("=" * 65)
 
     todos_los_layouts = aprx.listLayouts()
@@ -72,7 +115,7 @@ def _procesar_elementos(
             arcpy.AddWarning(f"No se encontró ningún layout con el nombre '{layout_filtro}'.")
             return False
 
-    arcpy.AddMessage(f"Layouts a examinar: {len(layouts_a_procesar)}")
+    arcpy.AddMessage(f"Layouts seleccionados: {len(layouts_a_procesar)}")
 
     filtro_elem = nombre_elemento_filtro.strip().lower() if nombre_elemento_filtro and nombre_elemento_filtro.strip() else None
 
@@ -173,25 +216,40 @@ def _procesar_elementos(
             if modificados_en_lyt > 0:
                 total_layouts_modificados += 1
 
-    arcpy.AddMessage("\n" + "=" * 65)
-    arcpy.AddMessage("RESUMEN DE MODIFICACIÓN DE LAYOUTS")
-    arcpy.AddMessage(f" - Layouts analizados:             {len(layouts_a_procesar)}")
-    arcpy.AddMessage(f" - Layouts con cambios:            {total_layouts_modificados}")
-    arcpy.AddMessage(f" - Total de elementos modificados: {total_elementos_modificados}")
-    arcpy.AddMessage("=" * 65)
+    elif tipo_elemento == "Ninguno (Solo Exportar)":
+        arcpy.AddMessage("Modo de solo exportación: No se aplicaron modificaciones sobre los elementos.")
 
-    if guardar_cambios:
-        try:
-            aprx.save()
-            arcpy.AddMessage("Cambios guardados con éxito en el archivo .aprx.")
-        except Exception as e:
-            arcpy.AddWarning(f"No se pudo guardar automáticamente el proyecto: {e}")
-    else:
-        if es_current:
-            arcpy.AddMessage("Los cambios se aplicaron en el proyecto activo en memoria.")
-            arcpy.AddMessage("-> Revise los layouts en ArcGIS Pro y guarde con Ctrl+S si está conforme.")
+    # Guardar cambios si corresponde
+    if tipo_elemento != "Ninguno (Solo Exportar)":
+        if guardar_cambios:
+            try:
+                aprx.save()
+                arcpy.AddMessage("Cambios guardados con éxito en el archivo .aprx.")
+            except Exception as e:
+                arcpy.AddWarning(f"No se pudo guardar automáticamente el proyecto: {e}")
         else:
-            arcpy.AddMessage("Aviso: El archivo .aprx en disco no fue modificado (active 'Guardar cambios automáticamente' si desea persistir en disco).")
+            if es_current:
+                arcpy.AddMessage("Los cambios se aplicaron en el proyecto activo en memoria (guarde con Ctrl+S si desea).")
+
+    # Exportación a carpeta
+    total_exportados = 0
+    if carpeta_export and carpeta_export.strip():
+        total_exportados = _exportar_layouts(
+            layouts=layouts_a_procesar,
+            carpeta_export=carpeta_export.strip(),
+            formato=formato_export,
+            dpi=dpi_export
+        )
+
+    arcpy.AddMessage("\n" + "=" * 65)
+    arcpy.AddMessage("RESUMEN DEL PROCESO")
+    arcpy.AddMessage(f" - Layouts analizados:             {len(layouts_a_procesar)}")
+    if tipo_elemento != "Ninguno (Solo Exportar)":
+        arcpy.AddMessage(f" - Layouts con elementos editados: {total_layouts_modificados}")
+        arcpy.AddMessage(f" - Total de elementos modificados: {total_elementos_modificados}")
+    if carpeta_export and carpeta_export.strip():
+        arcpy.AddMessage(f" - Layouts exportados con éxito:   {total_exportados} (en {carpeta_export})")
+    arcpy.AddMessage("=" * 65)
 
     return True
 
@@ -207,10 +265,11 @@ class Toolbox(object):
 class ReemplazarElementosLayout(object):
     def __init__(self):
         """Definición de la herramienta."""
-        self.label = "Reemplazar Elementos en Layouts del APRX"
+        self.label = "Reemplazar Elementos y Exportar Layouts del APRX"
         self.description = (
             "Permite buscar y reemplazar textos, imágenes/logos y mapas vinculados "
-            "a marcos de mapa en todos los layouts (o uno seleccionado) de un proyecto .aprx."
+            "a marcos de mapa en los layouts de un proyecto .aprx, así como exportar "
+            "masivamente todos los layouts a una carpeta en PDF, JPEG, PNG o TIFF."
         )
         self.canRunInBackground = False
 
@@ -227,16 +286,16 @@ class ReemplazarElementosLayout(object):
         )
         param_aprx.filter.list = ["aprx"]
 
-        # 1: Tipo de elemento a modificar
+        # 1: Tipo de elemento / acción
         param_tipo = arcpy.Parameter(
-            displayName="Tipo de Elemento a Modificar",
+            displayName="Tipo de Acción o Elemento a Modificar",
             name="tipo_elemento",
             datatype="GPString",
             parameterType="Required",
             direction="Input"
         )
         param_tipo.filter.type = "ValueList"
-        param_tipo.filter.list = ["Texto", "Imagen / Logo", "Mapa en Map Frame"]
+        param_tipo.filter.list = ["Texto", "Imagen / Logo", "Mapa en Map Frame", "Ninguno (Solo Exportar)"]
         param_tipo.value = "Texto"
 
         # 2: Layout objetivo
@@ -317,7 +376,38 @@ class ReemplazarElementosLayout(object):
         )
         param_guardar.value = False
 
-        # 10: Parámetro derivado de salida
+        # 10: Carpeta de Exportación (Opcional)
+        param_export_folder = arcpy.Parameter(
+            displayName="Carpeta de Exportación de Layouts (Opcional)",
+            name="carpeta_export",
+            datatype="DEFolder",
+            parameterType="Optional",
+            direction="Input"
+        )
+
+        # 11: Formato de Exportación
+        param_formato = arcpy.Parameter(
+            displayName="Formato de Exportación",
+            name="formato_export",
+            datatype="GPString",
+            parameterType="Optional",
+            direction="Input"
+        )
+        param_formato.filter.type = "ValueList"
+        param_formato.filter.list = ["PDF", "JPEG", "PNG", "TIFF"]
+        param_formato.value = "PDF"
+
+        # 12: Resolución DPI
+        param_dpi = arcpy.Parameter(
+            displayName="Resolución de Exportación (DPI)",
+            name="dpi_export",
+            datatype="GPLong",
+            parameterType="Optional",
+            direction="Input"
+        )
+        param_dpi.value = 300
+
+        # 13: Parámetro derivado de salida
         param_salida = arcpy.Parameter(
             displayName="Proyecto Modificado",
             name="proyecto_salida",
@@ -329,15 +419,15 @@ class ReemplazarElementosLayout(object):
         return [
             param_aprx, param_tipo, param_layout, param_filtro_nombre,
             param_buscar, param_reemplazo, param_case, param_imagen,
-            param_mapa, param_guardar, param_salida
+            param_mapa, param_guardar, param_export_folder, param_formato,
+            param_dpi, param_salida
         ]
 
     def isLicensed(self):
         return True
 
     def updateParameters(self, parameters):
-        """Actualiza opciones dinámicas según el proyecto y tipo de elemento."""
-        # Poblar listas de layouts y mapas
+        """Actualiza opciones dinámicas según el proyecto, tipo de elemento y exportación."""
         try:
             aprx_file = parameters[0].valueAsText or "CURRENT"
             aprx_obj = arcpy.mp.ArcGISProject(aprx_file)
@@ -352,26 +442,44 @@ class ReemplazarElementosLayout(object):
         except Exception:
             pass
 
-        # Habilitar o deshabilitar parámetros según el tipo de elemento
         tipo = parameters[1].valueAsText
         if tipo == "Texto":
+            parameters[3].enabled = True
             parameters[4].enabled = True
             parameters[5].enabled = True
             parameters[6].enabled = True
             parameters[7].enabled = False
             parameters[8].enabled = False
+            parameters[9].enabled = True
         elif tipo == "Imagen / Logo":
+            parameters[3].enabled = True
             parameters[4].enabled = False
             parameters[5].enabled = False
             parameters[6].enabled = False
             parameters[7].enabled = True
             parameters[8].enabled = False
+            parameters[9].enabled = True
         elif tipo == "Mapa en Map Frame":
+            parameters[3].enabled = True
             parameters[4].enabled = False
             parameters[5].enabled = False
             parameters[6].enabled = False
             parameters[7].enabled = False
             parameters[8].enabled = True
+            parameters[9].enabled = True
+        elif tipo == "Ninguno (Solo Exportar)":
+            parameters[3].enabled = False
+            parameters[4].enabled = False
+            parameters[5].enabled = False
+            parameters[6].enabled = False
+            parameters[7].enabled = False
+            parameters[8].enabled = False
+            parameters[9].enabled = False
+
+        # Habilitar opciones de formato y DPI si hay carpeta o si es modo solo exportar
+        tiene_carpeta = bool(parameters[10].valueAsText) or (tipo == "Ninguno (Solo Exportar)")
+        parameters[11].enabled = tiene_carpeta
+        parameters[12].enabled = tiene_carpeta
 
     def updateMessages(self, parameters):
         """Validación de parámetros obligatorios según el tipo seleccionado."""
@@ -385,6 +493,9 @@ class ReemplazarElementosLayout(object):
         elif tipo == "Mapa en Map Frame":
             if parameters[8].altered and not parameters[8].valueAsText:
                 parameters[8].setErrorMessage("Debe indicar el nombre del nuevo mapa.")
+        elif tipo == "Ninguno (Solo Exportar)":
+            if not parameters[10].valueAsText:
+                parameters[10].setErrorMessage("Debe seleccionar una carpeta de exportación.")
 
     def execute(self, parameters, messages):
         """Ejecución de la herramienta."""
@@ -398,8 +509,11 @@ class ReemplazarElementosLayout(object):
         nueva_imagen = parameters[7].valueAsText or None
         nuevo_mapa = parameters[8].valueAsText or None
         guardar_cambios = parameters[9].value
+        carpeta_export = parameters[10].valueAsText or None
+        formato_export = parameters[11].valueAsText or "PDF"
+        dpi_export = parameters[12].value or 300
 
-        parameters[10].value = aprx_path or "CURRENT"
+        parameters[13].value = aprx_path or "CURRENT"
 
         _procesar_elementos(
             aprx_path=aprx_path,
@@ -411,5 +525,8 @@ class ReemplazarElementosLayout(object):
             case_sensitive=case_sensitive,
             nueva_imagen_path=nueva_imagen,
             nuevo_mapa_nombre=nuevo_mapa,
-            guardar_cambios=guardar_cambios
+            guardar_cambios=guardar_cambios,
+            carpeta_export=carpeta_export,
+            formato_export=formato_export,
+            dpi_export=dpi_export
         )
