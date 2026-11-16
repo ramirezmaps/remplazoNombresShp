@@ -6,9 +6,8 @@ Permite modificar masivamente elementos dentro de los layouts de un proyecto:
 1. Textos: Buscar y reemplazar cadenas de texto en títulos, notas, membretes, etc.
 2. Imágenes / Logos: Actualizar la ruta del archivo de imagen de logos o elementos gráficos.
 3. Map Frames: Reasignar el mapa vinculado al marco de mapa.
-4. Exportación Masiva: Exportar todos los layouts (o filtrados) a una carpeta en PDF, JPEG, PNG o TIFF.
-
-Aplica a todos los layouts del proyecto o a un layout específico seleccionado.
+4. Exportación Masiva: Exportar todos los layouts a PDF, JPEG, PNG o TIFF
+   con soporte para 'clip_to_elements' (ajustar exportación a la extensión de los elementos).
 """
 
 import os
@@ -43,7 +42,56 @@ def log_error(msg):
         print(f"[ERROR] {msg}")
 
 
-def exportar_layouts(layouts, carpeta_export, formato="PDF", dpi=300):
+def _exportar_un_layout(lyt, out_path, formato, dpi, clip_to_elements=True):
+    """
+    Exporta un único layout utilizando la API moderna (CreateExportFormat) o métodos directos,
+    garantizando que clip_to_elements / clipToElements sea True.
+    """
+    fmt = (formato or "PDF").upper().strip()
+    dpi = int(dpi) if dpi else 300
+
+    # Método 1: API moderna de ArcGIS Pro (CreateExportFormat)
+    if hasattr(arcpy.mp, "CreateExportFormat"):
+        try:
+            export_fmt = arcpy.mp.CreateExportFormat(fmt, out_path)
+            if hasattr(export_fmt, "clipToElements"):
+                export_fmt.clipToElements = bool(clip_to_elements)
+            if hasattr(export_fmt, "resolution"):
+                export_fmt.resolution = dpi
+            lyt.export(export_fmt)
+            return
+        except Exception:
+            pass
+
+    # Método 2: Métodos de exportación directa con clip_to_elements
+    if fmt == "PDF":
+        try:
+            lyt.exportToPDF(out_path, resolution=dpi, clip_to_elements=clip_to_elements)
+        except TypeError:
+            lyt.exportToPDF(out_path, resolution=dpi)
+    elif fmt in ("JPEG", "JPG"):
+        try:
+            lyt.exportToJPEG(out_path, resolution=dpi, clip_to_elements=clip_to_elements)
+        except TypeError:
+            lyt.exportToJPEG(out_path, resolution=dpi)
+    elif fmt == "PNG":
+        try:
+            lyt.exportToPNG(out_path, resolution=dpi, clip_to_elements=clip_to_elements)
+        except TypeError:
+            lyt.exportToPNG(out_path, resolution=dpi)
+    elif fmt in ("TIFF", "TIF"):
+        try:
+            lyt.exportToTIFF(out_path, resolution=dpi, clip_to_elements=clip_to_elements)
+        except TypeError:
+            lyt.exportToTIFF(out_path, resolution=dpi)
+    else:
+        try:
+            lyt.exportToPDF(out_path, resolution=dpi, clip_to_elements=clip_to_elements)
+        except TypeError:
+            lyt.exportToPDF(out_path, resolution=dpi)
+
+
+def exportar_layouts(layouts, carpeta_export, formato="PDF", dpi=300, clip_to_elements=True):
     """Exporta los layouts indicados a la carpeta especificada."""
     os.makedirs(carpeta_export, exist_ok=True)
     fmt = (formato or "PDF").upper().strip()
@@ -52,29 +100,23 @@ def exportar_layouts(layouts, carpeta_export, formato="PDF", dpi=300):
 
     log_info("\n" + "-" * 50)
     log_info(f"EXPORTANDO LAYOUTS A: {carpeta_export}")
-    log_info(f"Formato: {fmt} | Resolución: {dpi} DPI")
+    log_info(f"Formato: {fmt} | Resolución: {dpi} DPI | clip_to_elements: {clip_to_elements}")
     log_info("-" * 50)
 
     for lyt in layouts:
         safe_name = re.sub(r'[\\/*?:"<>|]', "_", lyt.name)
-        try:
-            if fmt == "PDF":
-                out_path = os.path.join(carpeta_export, f"{safe_name}.pdf")
-                lyt.exportToPDF(out_path, resolution=dpi)
-            elif fmt in ("JPEG", "JPG"):
-                out_path = os.path.join(carpeta_export, f"{safe_name}.jpg")
-                lyt.exportToJPEG(out_path, resolution=dpi)
-            elif fmt == "PNG":
-                out_path = os.path.join(carpeta_export, f"{safe_name}.png")
-                lyt.exportToPNG(out_path, resolution=dpi)
-            elif fmt in ("TIFF", "TIF"):
-                out_path = os.path.join(carpeta_export, f"{safe_name}.tif")
-                lyt.exportToTIFF(out_path, resolution=dpi)
-            else:
-                out_path = os.path.join(carpeta_export, f"{safe_name}.pdf")
-                lyt.exportToPDF(out_path, resolution=dpi)
+        ext = "jpg" if fmt in ("JPEG", "JPG") else ("tif" if fmt in ("TIFF", "TIF") else fmt.lower())
+        out_path = os.path.join(carpeta_export, f"{safe_name}.{ext}")
 
-            log_info(f" -> Exportado: '{lyt.name}' -> {os.path.basename(out_path)}")
+        try:
+            _exportar_un_layout(
+                lyt=lyt,
+                out_path=out_path,
+                formato=fmt,
+                dpi=dpi,
+                clip_to_elements=clip_to_elements
+            )
+            log_info(f" -> Exportado: '{lyt.name}' -> {os.path.basename(out_path)} (clip_to_elements=True)")
             exportados += 1
         except Exception as e:
             log_warning(f"Error al exportar layout '{lyt.name}': {e}")
@@ -95,7 +137,8 @@ def procesar_elementos_layout(
     guardar_cambios=False,
     carpeta_export=None,
     formato_export="PDF",
-    dpi_export=300
+    dpi_export=300,
+    clip_to_elements=True
 ):
     """
     Función principal para modificar y/o exportar layouts de un proyecto ArcGIS Pro.
@@ -104,7 +147,6 @@ def procesar_elementos_layout(
         log_error("Esta herramienta requiere el módulo 'arcpy' de ArcGIS Pro.")
         return False
 
-    # 1. Determinar el proyecto
     es_current = False
     if not aprx_path or not str(aprx_path).strip() or str(aprx_path).upper() == "CURRENT":
         try:
@@ -133,10 +175,9 @@ def procesar_elementos_layout(
     if nombre_elemento_filtro and nombre_elemento_filtro.strip():
         log_info(f"Filtro de Elemento: '{nombre_elemento_filtro}'")
     if carpeta_export and carpeta_export.strip():
-        log_info(f"Exportación activa: Sí ({formato_export} @ {dpi_export} DPI)")
+        log_info(f"Exportación activa: Sí ({formato_export} @ {dpi_export} DPI, clip_to_elements={clip_to_elements})")
     log_info("=" * 65)
 
-    # 2. Filtrar layouts
     todos_los_layouts = aprx.listLayouts()
     if not todos_los_layouts:
         log_warning("El proyecto no contiene ningún Layout.")
@@ -158,7 +199,6 @@ def procesar_elementos_layout(
     total_elementos_modificados = 0
     total_layouts_modificados = 0
 
-    # 3. Modificaciones de elementos (si no es solo exportación)
     if tipo_elemento == "Texto":
         if not texto_buscar:
             log_error("Debe ingresar un texto para buscar.")
@@ -256,7 +296,7 @@ def procesar_elementos_layout(
     elif tipo_elemento == "Ninguno (Solo Exportar)":
         log_info("Modo de solo exportación: No se realizarán cambios de texto ni elementos.")
 
-    # 4. Guardar cambios si corresponde
+    # Guardar cambios si corresponde
     if tipo_elemento != "Ninguno (Solo Exportar)":
         if guardar_cambios:
             try:
@@ -268,14 +308,15 @@ def procesar_elementos_layout(
             if es_current:
                 log_info("Los cambios se aplicaron en el proyecto activo en memoria (guardar con Ctrl+S si desea).")
 
-    # 5. Exportar layouts si se indicó una carpeta de exportación
+    # Exportar layouts si se indicó una carpeta de exportación
     total_exportados = 0
     if carpeta_export and carpeta_export.strip():
         total_exportados = exportar_layouts(
             layouts=layouts_a_procesar,
             carpeta_export=carpeta_export.strip(),
             formato=formato_export,
-            dpi=dpi_export
+            dpi=dpi_export,
+            clip_to_elements=clip_to_elements
         )
 
     log_info("\n" + "=" * 65)
@@ -286,6 +327,7 @@ def procesar_elementos_layout(
         log_info(f" - Total de elementos modificados: {total_elementos_modificados}")
     if carpeta_export and carpeta_export.strip():
         log_info(f" - Layouts exportados con éxito:   {total_exportados} (a {carpeta_export})")
+        log_info(f" - Modo clip_to_elements aplicado: {clip_to_elements}")
     log_info("=" * 65)
 
     return True
@@ -310,6 +352,7 @@ def main():
         carpeta_export = arcpy.GetParameterAsText(10) or None
         formato_export = arcpy.GetParameterAsText(11) or "PDF"
         dpi_export = arcpy.GetParameter(12) if arcpy.GetParameterCount() > 12 else 300
+        clip_elements = arcpy.GetParameter(13) if arcpy.GetParameterCount() > 13 else True
 
         procesar_elementos_layout(
             aprx_path=aprx_path,
@@ -324,7 +367,8 @@ def main():
             guardar_cambios=guardar,
             carpeta_export=carpeta_export,
             formato_export=formato_export,
-            dpi_export=dpi_export
+            dpi_export=dpi_export,
+            clip_to_elements=clip_elements
         )
 
 

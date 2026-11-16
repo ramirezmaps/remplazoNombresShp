@@ -12,6 +12,7 @@ Permite buscar y reemplazar de forma masiva elementos dentro de los layouts y/o 
 * **Imágenes / Logos:** Sustituye la ruta del archivo de imagen para actualizar logos de empresas, clientes o encabezados gráficos.
 * **Marcos de Mapa (Map Frames):** Reasigna el mapa asociado al marco de mapa.
 * **Exportación Masiva:** Exporta todos los layouts (o filtrados) a una carpeta en formato **PDF**, **JPEG**, **PNG** o **TIFF** con resolución (DPI) personalizable.
+* **Modo `clip_to_elements = True`:** Ajusta la extensión del archivo exportado estrictamente a los límites de los elementos del layout (evitando márgenes o áreas vacías no deseadas fuera del contenido). Activado por defecto en la interfaz y en el código.
 
 **Modos de uso:**
 - **Solo Exportar:** Selecciona la acción *"Ninguno (Solo Exportar)"*, elige la carpeta de salida, el formato (ej. PDF) y los DPI para generar los archivos de todos los layouts de una sola vez.

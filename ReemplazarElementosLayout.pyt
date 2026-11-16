@@ -7,7 +7,8 @@ Herramienta nativa (.pyt) que permite:
 2. Actualizar logos e imágenes institucionales.
 3. Reasignar mapas vinculados a marcos de mapa (Map Frames).
 4. Exportar de forma masiva todos los layouts (o uno seleccionado) a una carpeta
-   específica en formato PDF, JPEG, PNG o TIFF con resolución configurable.
+   específica en formato PDF, JPEG, PNG o TIFF con resolución configurable y
+   garantizando que el modo 'clip_to_elements' esté activo (True).
 """
 
 import os
@@ -16,7 +17,55 @@ import re
 import arcpy
 
 
-def _exportar_layouts(layouts, carpeta_export, formato="PDF", dpi=300):
+def _exportar_un_layout(lyt, out_path, formato, dpi, clip_to_elements=True):
+    """
+    Exporta un layout garantizando clip_to_elements / clipToElements = True.
+    """
+    fmt = (formato or "PDF").upper().strip()
+    dpi = int(dpi) if dpi else 300
+
+    # Método 1: API moderna de ArcGIS Pro (CreateExportFormat)
+    if hasattr(arcpy.mp, "CreateExportFormat"):
+        try:
+            export_fmt = arcpy.mp.CreateExportFormat(fmt, out_path)
+            if hasattr(export_fmt, "clipToElements"):
+                export_fmt.clipToElements = bool(clip_to_elements)
+            if hasattr(export_fmt, "resolution"):
+                export_fmt.resolution = dpi
+            lyt.export(export_fmt)
+            return
+        except Exception:
+            pass
+
+    # Método 2: Métodos de exportación directa con clip_to_elements
+    if fmt == "PDF":
+        try:
+            lyt.exportToPDF(out_path, resolution=dpi, clip_to_elements=clip_to_elements)
+        except TypeError:
+            lyt.exportToPDF(out_path, resolution=dpi)
+    elif fmt in ("JPEG", "JPG"):
+        try:
+            lyt.exportToJPEG(out_path, resolution=dpi, clip_to_elements=clip_to_elements)
+        except TypeError:
+            lyt.exportToJPEG(out_path, resolution=dpi)
+    elif fmt == "PNG":
+        try:
+            lyt.exportToPNG(out_path, resolution=dpi, clip_to_elements=clip_to_elements)
+        except TypeError:
+            lyt.exportToPNG(out_path, resolution=dpi)
+    elif fmt in ("TIFF", "TIF"):
+        try:
+            lyt.exportToTIFF(out_path, resolution=dpi, clip_to_elements=clip_to_elements)
+        except TypeError:
+            lyt.exportToTIFF(out_path, resolution=dpi)
+    else:
+        try:
+            lyt.exportToPDF(out_path, resolution=dpi, clip_to_elements=clip_to_elements)
+        except TypeError:
+            lyt.exportToPDF(out_path, resolution=dpi)
+
+
+def _exportar_layouts(layouts, carpeta_export, formato="PDF", dpi=300, clip_to_elements=True):
     """Exporta los layouts indicados a la carpeta especificada."""
     os.makedirs(carpeta_export, exist_ok=True)
     fmt = (formato or "PDF").upper().strip()
@@ -25,29 +74,23 @@ def _exportar_layouts(layouts, carpeta_export, formato="PDF", dpi=300):
 
     arcpy.AddMessage("\n" + "-" * 50)
     arcpy.AddMessage(f"EXPORTANDO LAYOUTS A: {carpeta_export}")
-    arcpy.AddMessage(f"Formato: {fmt} | Resolución: {dpi} DPI")
+    arcpy.AddMessage(f"Formato: {fmt} | Resolución: {dpi} DPI | clip_to_elements: {clip_to_elements}")
     arcpy.AddMessage("-" * 50)
 
     for lyt in layouts:
         safe_name = re.sub(r'[\\/*?:"<>|]', "_", lyt.name)
-        try:
-            if fmt == "PDF":
-                out_path = os.path.join(carpeta_export, f"{safe_name}.pdf")
-                lyt.exportToPDF(out_path, resolution=dpi)
-            elif fmt in ("JPEG", "JPG"):
-                out_path = os.path.join(carpeta_export, f"{safe_name}.jpg")
-                lyt.exportToJPEG(out_path, resolution=dpi)
-            elif fmt == "PNG":
-                out_path = os.path.join(carpeta_export, f"{safe_name}.png")
-                lyt.exportToPNG(out_path, resolution=dpi)
-            elif fmt in ("TIFF", "TIF"):
-                out_path = os.path.join(carpeta_export, f"{safe_name}.tif")
-                lyt.exportToTIFF(out_path, resolution=dpi)
-            else:
-                out_path = os.path.join(carpeta_export, f"{safe_name}.pdf")
-                lyt.exportToPDF(out_path, resolution=dpi)
+        ext = "jpg" if fmt in ("JPEG", "JPG") else ("tif" if fmt in ("TIFF", "TIF") else fmt.lower())
+        out_path = os.path.join(carpeta_export, f"{safe_name}.{ext}")
 
-            arcpy.AddMessage(f" -> Exportado: '{lyt.name}' -> {os.path.basename(out_path)}")
+        try:
+            _exportar_un_layout(
+                lyt=lyt,
+                out_path=out_path,
+                formato=fmt,
+                dpi=dpi,
+                clip_to_elements=clip_to_elements
+            )
+            arcpy.AddMessage(f" -> Exportado: '{lyt.name}' -> {os.path.basename(out_path)} (clip_to_elements={clip_to_elements})")
             exportados += 1
         except Exception as e:
             arcpy.AddWarning(f"Error al exportar layout '{lyt.name}': {e}")
@@ -68,7 +111,8 @@ def _procesar_elementos(
     guardar_cambios,
     carpeta_export,
     formato_export,
-    dpi_export
+    dpi_export,
+    clip_to_elements
 ):
     es_current = False
     if not aprx_path or not str(aprx_path).strip() or str(aprx_path).upper() == "CURRENT":
@@ -98,7 +142,7 @@ def _procesar_elementos(
     if nombre_elemento_filtro and nombre_elemento_filtro.strip():
         arcpy.AddMessage(f"Filtro de Elemento: '{nombre_elemento_filtro}'")
     if carpeta_export and carpeta_export.strip():
-        arcpy.AddMessage(f"Exportación activa: Sí ({formato_export} @ {dpi_export} DPI)")
+        arcpy.AddMessage(f"Exportación activa: Sí ({formato_export} @ {dpi_export} DPI, clip_to_elements={clip_to_elements})")
     arcpy.AddMessage("=" * 65)
 
     todos_los_layouts = aprx.listLayouts()
@@ -238,7 +282,8 @@ def _procesar_elementos(
             layouts=layouts_a_procesar,
             carpeta_export=carpeta_export.strip(),
             formato=formato_export,
-            dpi=dpi_export
+            dpi=dpi_export,
+            clip_to_elements=clip_to_elements
         )
 
     arcpy.AddMessage("\n" + "=" * 65)
@@ -249,6 +294,7 @@ def _procesar_elementos(
         arcpy.AddMessage(f" - Total de elementos modificados: {total_elementos_modificados}")
     if carpeta_export and carpeta_export.strip():
         arcpy.AddMessage(f" - Layouts exportados con éxito:   {total_exportados} (en {carpeta_export})")
+        arcpy.AddMessage(f" - Modo clip_to_elements aplicado: {clip_to_elements}")
     arcpy.AddMessage("=" * 65)
 
     return True
@@ -269,7 +315,8 @@ class ReemplazarElementosLayout(object):
         self.description = (
             "Permite buscar y reemplazar textos, imágenes/logos y mapas vinculados "
             "a marcos de mapa en los layouts de un proyecto .aprx, así como exportar "
-            "masivamente todos los layouts a una carpeta en PDF, JPEG, PNG o TIFF."
+            "masivamente todos los layouts a una carpeta en PDF, JPEG, PNG o TIFF con "
+            "ajuste al contenido de los elementos (clip_to_elements = True)."
         )
         self.canRunInBackground = False
 
@@ -407,7 +454,17 @@ class ReemplazarElementosLayout(object):
         )
         param_dpi.value = 300
 
-        # 13: Parámetro derivado de salida
+        # 13: Ajustar al contenido de los elementos (clip_to_elements)
+        param_clip = arcpy.Parameter(
+            displayName="Ajustar al contenido de los elementos (clip_to_elements)",
+            name="clip_to_elements",
+            datatype="GPBoolean",
+            parameterType="Optional",
+            direction="Input"
+        )
+        param_clip.value = True
+
+        # 14: Parámetro derivado de salida
         param_salida = arcpy.Parameter(
             displayName="Proyecto Modificado",
             name="proyecto_salida",
@@ -420,7 +477,7 @@ class ReemplazarElementosLayout(object):
             param_aprx, param_tipo, param_layout, param_filtro_nombre,
             param_buscar, param_reemplazo, param_case, param_imagen,
             param_mapa, param_guardar, param_export_folder, param_formato,
-            param_dpi, param_salida
+            param_dpi, param_clip, param_salida
         ]
 
     def isLicensed(self):
@@ -476,10 +533,11 @@ class ReemplazarElementosLayout(object):
             parameters[8].enabled = False
             parameters[9].enabled = False
 
-        # Habilitar opciones de formato y DPI si hay carpeta o si es modo solo exportar
+        # Habilitar opciones de exportación si hay carpeta o si es modo solo exportar
         tiene_carpeta = bool(parameters[10].valueAsText) or (tipo == "Ninguno (Solo Exportar)")
-        parameters[11].enabled = tiene_carpeta
-        parameters[12].enabled = tiene_carpeta
+        parameters[11].enabled = tiene_carpeta # formato
+        parameters[12].enabled = tiene_carpeta # dpi
+        parameters[13].enabled = tiene_carpeta # clip_to_elements
 
     def updateMessages(self, parameters):
         """Validación de parámetros obligatorios según el tipo seleccionado."""
@@ -512,8 +570,9 @@ class ReemplazarElementosLayout(object):
         carpeta_export = parameters[10].valueAsText or None
         formato_export = parameters[11].valueAsText or "PDF"
         dpi_export = parameters[12].value or 300
+        clip_to_elements = parameters[13].value if parameters[13].value is not None else True
 
-        parameters[13].value = aprx_path or "CURRENT"
+        parameters[14].value = aprx_path or "CURRENT"
 
         _procesar_elementos(
             aprx_path=aprx_path,
@@ -528,5 +587,6 @@ class ReemplazarElementosLayout(object):
             guardar_cambios=guardar_cambios,
             carpeta_export=carpeta_export,
             formato_export=formato_export,
-            dpi_export=dpi_export
+            dpi_export=dpi_export,
+            clip_to_elements=clip_to_elements
         )
