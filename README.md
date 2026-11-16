@@ -1,102 +1,96 @@
-# Herramienta de Renombrado Masivo de Shapefiles para ArcGIS Pro
+# Herramientas de Renombrado Masivo de Shapefiles para ArcGIS Pro
 
-Esta solución te permite renombrar automáticamente múltiples shapefiles (`.shp`) ubicados en una carpeta a partir de una tabla de equivalencias en **Excel** (`.xlsx` o `.xls`).
-
----
-
-## 📁 Archivos Incluidos
-
-1. **`RenombrarShapefiles.pyt`**: **Toolbox nativo de ArcGIS Pro (Recomendado)**. Solo tienes que agregarlo a tu proyecto y abrir la herramienta con interfaz gráfica interactiva.
-2. **`renombrar_shp.py`**: Script de Python independiente. Puede ejecutarse por consola, importarse en otros scripts o usarse como *Script Tool* tradicional en un archivo `.tbx` o `.atbx`.
-3. **`plantilla_ejemplo.xlsx`**: Archivo Excel de ejemplo con la estructura recomendada.
+Repositorio con herramientas tipo **Python Toolbox (`.pyt`)** y scripts independientes para ArcGIS Pro diseñados para renombrar shapefiles de forma masiva e íntegra (renombrando automáticamente `.shp`, `.shx`, `.dbf`, `.prj`, `.cpg`, `.sbn`, `.sbx`, `.shp.xml`, `.qpj`, etc.).
 
 ---
 
-## 🚀 Método 1: Usar directamente en ArcGIS Pro (Recomendado)
+## 📦 Herramientas Incluidas
 
-No requiere compilar ni configurar parámetros manualmente:
+### 1. `ReemplazarTextoShp.pyt` — Reemplazo directo de cadena de texto (¡NUEVO!)
+Permite buscar un patrón o fragmento de texto en los nombres de los shapefiles de una carpeta y reemplazarlo por otro valor definido por el usuario (o eliminarlo).
+
+* **Ejemplo práctico:**
+  - Carpeta contiene: `SITIO_N1_EL_SAUCE_rios.shp`, `SITIO_N1_EL_SAUCE_caminos.shp`
+  - **Texto a buscar:** `SITIO_N1_EL_SAUCE`
+  - **Texto de reemplazo:** `SITIO_N2_LOS_ALMENDROS`
+  - **Resultado:** `SITIO_N2_LOS_ALMENDROS_rios.shp`, `SITIO_N2_LOS_ALMENDROS_caminos.shp` (con todos sus archivos asociados `.dbf`, `.prj`, etc.).
+
+* **Parámetros disponibles:**
+  - **Carpeta con Shapefiles:** Carpeta donde se ubican las capas.
+  - **Texto a Buscar en el Nombre:** Cadena o prefijo a sustituir.
+  - **Texto de Reemplazo:** Nuevo texto (si se deja vacío, se elimina el fragmento buscado).
+  - **Diferenciar mayúsculas de minúsculas:** Opcional (por defecto ignora mayúsculas/minúsculas).
+  - **Incluir Subcarpetas:** Opcional (permite procesar recursivamente).
+
+---
+
+### 2. `RenombrarShapefiles.pyt` — Renombrado mediante tabla Excel
+Permite pasarle un archivo Excel (`.xlsx` o `.xls`) con una tabla de equivalencias con los nombres antiguos y nuevos.
+
+* **Parámetros disponibles:**
+  - **Carpeta con Shapefiles:** Carpeta que contiene los shapefiles.
+  - **Archivo Excel con Equivalencias:** Archivo `.xlsx` o `.xls` con los pares de nombres.
+  - **Hoja de Excel (Opcional):** Desplegable automático con las pestañas del libro.
+  - **Columna Nombre Antiguo / Nuevo (Opcional):** Se autoseleccionan si se llaman `nombre_antiguo` / `nombre_nuevo`.
+
+---
+
+## 🚀 Cómo usar las herramientas en ArcGIS Pro
 
 1. Abre tu proyecto en **ArcGIS Pro**.
-2. Ve al panel **Catalog** (*Catálogo*).
-3. Despliega la sección **Toolboxes** (*Cajas de herramientas*).
-4. Haz clic derecho sobre **Toolboxes** y selecciona **Add Toolbox** (*Agregar caja de herramientas*).
-5. Navega y selecciona el archivo `RenombrarShapefiles.pyt`.
-6. Al desplegar la caja, verás la herramienta **"Renombrar Shapefiles con Excel"**. Haz doble clic para abrirla.
-7. En el panel de Geoprocesamiento:
-   - **Carpeta con Shapefiles**: Selecciona la carpeta donde están tus archivos `.shp`.
-   - **Archivo Excel con Equivalencias**: Selecciona tu archivo Excel (`.xlsx` o `.xls`).
-   - *(Opcional)* **Hoja de Excel**: Se autocompletará con las hojas disponibles en tu Excel.
-   - *(Opcional)* **Columna de Nombre Antiguo**: Selecciona la columna del nombre original (se detecta automáticamente si se llama `nombre_antiguo`, `antiguo`, etc.).
-   - *(Opcional)* **Columna de Nombre Nuevo**: Selecciona la columna del nombre nuevo (se detecta automáticamente si se llama `nombre_nuevo`, `nuevo`, etc.).
-8. Haz clic en **Run** (*Ejecutar*).
+2. Abre el panel **Catalog** (*Catálogo*).
+3. Haz clic derecho sobre la carpeta **Toolboxes** (*Cajas de herramientas*) -> **Add Toolbox** (*Agregar caja de herramientas*).
+4. Elige la herramienta que necesites:
+   - `ReemplazarTextoShp.pyt`
+   - `RenombrarShapefiles.pyt`
+5. Haz doble clic sobre la herramienta para abrir el panel de Geoprocesamiento, ingresa los parámetros y pulsa **Run** (*Ejecutar*).
 
-Al finalizar, el Catálogo de ArcGIS Pro se actualizará automáticamente mostrando los nuevos nombres.
+Al finalizar, el Catálogo de ArcGIS Pro se actualiza automáticamente (`arcpy.RefreshCatalog`) mostrando los nuevos nombres de inmediato.
 
 ---
 
-## 💻 Método 2: Ejecución desde Consola o Terminal
+## 💻 Ejecución desde Consola o Terminal (Python puro)
 
-Si prefieres ejecutar el proceso sin abrir ArcGIS Pro, puedes usar `renombrar_shp.py`:
+Ambas herramientas cuentan con su script equivalente ejecutable desde la terminal:
 
-### Modo Interactivo:
+### Para reemplazo de texto:
 ```bash
+# Modo interactivo:
+python reemplazar_texto_shp.py
+
+# Modo directo por línea de comandos:
+python reemplazar_texto_shp.py --carpeta "C:\MisCapas" --buscar "SITIO_N1_EL_SAUCE" --reemplazo "SITIO_N2_LOS_ALMENDROS"
+```
+
+### Para renombrado por Excel:
+```bash
+# Modo interactivo:
 python renombrar_shp.py
-```
-El script te solicitará la ruta de la carpeta y del archivo Excel por pantalla.
 
-### Modo con Parámetros:
-```bash
-python renombrar_shp.py --carpeta "C:\MisCapas\SHP" --excel "C:\MisCapas\equivalencias.xlsx"
+# Modo directo por línea de comandos:
+python renombrar_shp.py --carpeta "C:\MisCapas" --excel "C:\MisCapas\plantilla_ejemplo.xlsx"
 ```
-
-Opciones adicionales:
-- `--hoja "Hoja1"`: Especificar nombre de la hoja.
-- `--col-antiguo "columna_origen"`: Nombre de la columna antigua.
-- `--col-nuevo "columna_destino"`: Nombre de la columna nueva.
-- `--sobrescribir`: Sobrescribe los archivos si el nombre destino ya existiera.
 
 ---
 
-## 📊 Formato del Archivo Excel
+## 🧩 Archivos que se renombran automáticamente
 
-El archivo Excel debe tener al menos dos columnas. Por ejemplo:
+Un **Shapefile** está compuesto por múltiples archivos que comparten el mismo nombre base. Ambas herramientas renombran de forma simultánea todos los componentes existentes:
 
-| nombre_antiguo | nombre_nuevo |
-|---|---|
-| parcelas_2020 | parcelas_catastro_2024 |
-| red_vial_v1 | red_vial_nacional |
-| rios_principales.shp | hidrografia_rios.shp |
-| zonificacion_urbana | zonas_urbanas_actualizadas |
-
-> [!TIP]
-> - Puedes incluir o no la extensión `.shp` en las celdas; la herramienta la detecta y normaliza automáticamente.
-> - Si tus columnas tienen otros nombres (ej. `Original` y `Nuevo`), la herramienta intentará detectarlas por coincidencia de palabras clave o por su posición (Columna 1 y Columna 2).
-
----
-
-## 🧩 ¿Qué archivos se renombran?
-
-Un **Shapefile** no es un único archivo, sino un conjunto de archivos con el mismo nombre base. La herramienta renombra automáticamente todos los componentes que encuentre para cada shapefile:
-
-- `.shp`: Geometría.
+- `.shp`: Geometría vectorial.
 - `.shx`: Índice de geometrías.
 - `.dbf`: Tabla de atributos dBase.
 - `.prj`: Proyección cartográfica y sistema de coordenadas.
-- `.cpg`: Codificación de caracteres.
-- `.sbn` y `.sbx`: Índices espaciales.
-- `.shp.xml`: Metadatos de ArcGIS.
-- `.qpj`: Proyección de QGIS (si existiese).
-- Y cualquier otro archivo complementario asociado (`.cst`, `.fbn`, etc.).
+- `.cpg`: Juego de caracteres / codificación.
+- `.sbn` y `.sbx`: Índices espaciales de ArcGIS.
+- `.shp.xml`: Metadatos ArcGIS.
+- `.qpj`: Proyección auxiliar QGIS.
+- `.cst`, `.fbn`, `.fbx`, `.atx`, etc.
 
 ---
 
-## ⚠️ Consejos y Solución de Problemas
+## ⚠️ Consejos Importantes
 
 > [!IMPORTANT]
-> **Bloqueos de archivos (.sr.lock):**
-> Si alguno de los shapefiles está cargado como capa en el mapa activo de ArcGIS Pro, el programa colocará un bloqueo de archivo.
-> Si la herramienta reporta que el archivo está bloqueado, **remueve la capa del mapa o cierra el proyecto** antes de ejecutar el renombrado.
-
-> [!NOTE]
-> **Archivos no encontrados:**
-> Si un nombre listado en el Excel no existe en la carpeta, la herramienta emitirá una advertencia y continuará procesando el resto sin detenerse.
+> **Bloqueos de archivo (.sr.lock):**
+> Si el shapefile está cargado en el mapa activo de ArcGIS Pro, el programa genera un archivo de bloqueo (`.sr.lock`). En caso de advertencia por bloqueo, **remueve la capa del mapa o cierra el proyecto** antes de renombrar.
