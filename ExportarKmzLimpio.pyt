@@ -1,13 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-Toolbox de ArcGIS Pro: Exportar Capas a KMZ Limpio (Sin Hipervínculos)
-======================================================================
+Toolbox de ArcGIS Pro: Exportar Capas a KMZ Limpio (Sin Hipervínculos, con Atributos)
+====================================================================================
 Herramienta nativa (.pyt) para exportar capas vectoriales y Group Layers a KMZ
 garantizando que:
 - La pestaña 'Descripción' en las propiedades del KMZ (Google Earth) quede
   completamente vacía en todos los niveles (Documento, Carpetas y Placemarks).
-- Se eliminen todos los hipervínculos HTML (<a href>), URLs, <Snippet>,
-  <BalloonStyle>, <ExtendedData>, <NetworkLink>, <atom:link> y <href> externos.
+- Se CONSERVE la tabla de atributos completa migrando los campos desde el HTML
+  de ArcGIS hacia el estándar KML 2.2 (<Schema> + <ExtendedData><SchemaData><SimpleData>),
+  permitiendo ver los atributos limpios al hacer clic en Google Earth y mantener las
+  columnas reales al abrir el KMZ en QGIS/ArcGIS.
+- Se eliminen todos los hipervínculos HTML (<a href>), URLs (http/https/www/file),
+  <Snippet>, <BalloonStyle>, <NetworkLink>, <atom:link> y <href> externos.
 - Se exporte geometría vectorial pura (NO_COMPOSITE) conservando simbología
   e íconos locales embebidos dentro del KMZ.
 - Se ajusten las geometrías al terreno (CLAMPED_TO_GROUND) por defecto.
@@ -15,10 +19,13 @@ garantizando que:
 
 import os
 import re
+import html
 import shutil
 import zipfile
 import tempfile
 import xml.etree.ElementTree as ET
+from html.parser import HTMLParser
+from xml.sax.saxutils import escape as xml_escape
 import arcpy
 
 
@@ -31,49 +38,258 @@ def _sanitizar_nombre_archivo(nombre):
     return limpio or "capa_sin_nombre"
 
 
-def _limpiar_contenido_kml(kml_text):
+class _ArcGISTableHTMLParser(HTMLParser):
     """
-    Limpia el XML del KML dejando vacía la pestaña Descripción en Google Earth
-    y eliminando cualquier hipervínculo o enlace externo.
+    Extrae pares (campo, valor) desde las tablas HTML generadas por ArcGIS Pro
+    dentro de <description>, soportando tablas anidadas y eliminando etiquetas
+    HTML como <a href="..."> mientras conserva el texto limpio.
+    """
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.rows = []
+        self._tr_stack = []
+
+    def handle_starttag(self, tag, attrs):
+        t = tag.lower()
+        if t == "tr":
+            self._tr_stack.append({"cells": [], "in_cell": False, "has_nested_table": False})
+        elif t == "table":
+            if self._tr_stack:
+                self._tr_stack[-1]["has_nested_table"] = True
+        elif t in ("td", "th"):
+            if self._tr_stack and not self._tr_stack[-1]["has_nested_table"]:
+                self._tr_stack[-1]["in_cell"] = True
+                self._tr_stack[-1]["cells"].append([])
+        elif t == "br":
+            if self._tr_stack and self._tr_stack[-1]["in_cell"]:
+                self._tr_stack[-1]["cells"][-1].append(" ")
+
+    def handle_endtag(self, tag):
+        t = tag.lower()
+        if t in ("td", "th"):
+            if self._tr_stack and self._tr_stack[-1]["in_cell"]:
+                self._tr_stack[-1]["in_cell"] = False
+        elif t == "tr":
+            if self._tr_stack:
+                row = self._tr_stack.pop()
+                if not row["has_nested_table"] and len(row["cells"]) == 2:
+                    key = "".join(row["cells"][0]).strip()
+                    val = "".join(row["cells"][1]).strip()
+                    if key:
+                        self.rows.append((key, val))
+
+    def handle_data(self, data):
+        if self._tr_stack and self._tr_stack[-1]["in_cell"] and not self._tr_stack[-1]["has_nested_table"]:
+            self._tr_stack[-1]["cells"][-1].append(data)
+
+
+def _limpiar_valor_atributo(valor):
+    """Limpia espacios, valores <Null> y elimina URLs para evitar auto-hipervínculos en Google Earth."""
+    if valor is None:
+        return ""
+    texto = re.sub(r'\s+', ' ', str(valor)).strip()
+    if texto.lower() == "<null>":
+        return ""
+    texto = re.sub(r'(?:https?|ftp|file)://\S+', '', texto, flags=re.IGNORECASE)
+    texto = re.sub(r'\bwww\.\S+', '', texto, flags=re.IGNORECASE)
+    texto = re.sub(r'\s+', ' ', texto).strip()
+    return texto
+
+
+def _extraer_atributos_desde_descripcion(desc_inner):
+    """Extrae pares (campo, valor) desde el contenido de una etiqueta <description>."""
+    if not desc_inner:
+        return []
+
+    contenido = desc_inner.strip()
+    cdata_match = re.match(r'^<!\[CDATA\[(.*)\]\]>$', contenido, flags=re.DOTALL)
+    if cdata_match:
+        html_str = cdata_match.group(1)
+    else:
+        html_str = html.unescape(contenido)
+
+    parser = _ArcGISTableHTMLParser()
+    try:
+        parser.feed(html_str)
+        parser.close()
+    except Exception:
+        return []
+
+    pares_limpios = []
+    for k, v in parser.rows:
+        campo = re.sub(r'\s+', ' ', k).strip()
+        if not campo:
+            continue
+        valor = _limpiar_valor_atributo(v)
+        pares_limpios.append((campo, valor))
+    return pares_limpios
+
+
+def _extraer_atributos_desde_extended_data(ext_xml):
+    """Extrae pares (campo, valor) si el Placemark ya traía ExtendedData previo."""
+    pares = []
+    for m in re.finditer(r'<SimpleData\s+[^>]*name=["\']([^"\']+)["\'][^>]*>(.*?)</SimpleData>', ext_xml, flags=re.DOTALL | re.IGNORECASE):
+        campo = html.unescape(m.group(1)).strip()
+        valor = _limpiar_valor_atributo(html.unescape(m.group(2)))
+        if campo:
+            pares.append((campo, valor))
+
+    if pares:
+        return pares
+
+    for m in re.finditer(
+        r'<Data\s+[^>]*name=["\']([^"\']+)["\'][^>]*>.*?<value[^>]*>(.*?)</value>.*?</Data>',
+        ext_xml,
+        flags=re.DOTALL | re.IGNORECASE
+    ):
+        campo = html.unescape(m.group(1)).strip()
+        valor = _limpiar_valor_atributo(html.unescape(m.group(2)))
+        if campo:
+            pares.append((campo, valor))
+
+    return pares
+
+
+def _limpiar_contenido_kml(kml_text, conservar_atributos=True):
+    """
+    Migra la tabla de atributos desde <description> hacia <Schema>/<ExtendedData>
+    dejando la pestaña Descripción completamente vacía y libre de hipervínculos.
     """
     stats = {
         "descriptions": 0,
+        "atributos_migrados": 0,
+        "placemarks_con_atributos": 0,
         "snippets": 0,
         "balloon_styles": 0,
-        "extended_data": 0,
         "network_links": 0,
         "external_hrefs": 0
     }
 
-    # 1. Eliminar <description>...</description> y <description/>
+    tiene_document = bool(re.search(r'<Document\b[^>]*>', kml_text, flags=re.IGNORECASE))
+    schemas_por_campos = {}
+    schemas_orden = []
+
+    def _procesar_placemark(match):
+        pm_xml = match.group(0)
+        atributos = []
+
+        if conservar_atributos:
+            desc_match = re.search(r'<description\b[^>]*>(.*?)</description>', pm_xml, flags=re.DOTALL | re.IGNORECASE)
+            if desc_match:
+                atributos = _extraer_atributos_desde_descripcion(desc_match.group(1))
+
+            if not atributos:
+                ext_match = re.search(r'<ExtendedData\b[^>]*>(.*?)</ExtendedData>', pm_xml, flags=re.DOTALL | re.IGNORECASE)
+                if ext_match:
+                    atributos = _extraer_atributos_desde_extended_data(ext_match.group(1))
+
+        # Eliminar <description>, <Snippet> y <ExtendedData> previos
+        pm_xml, n = re.subn(r'<description\b[^>]*>.*?</description>', '', pm_xml, flags=re.DOTALL | re.IGNORECASE)
+        stats["descriptions"] += n
+        pm_xml, n = re.subn(r'<description\b[^>]*/>', '', pm_xml, flags=re.IGNORECASE)
+        stats["descriptions"] += n
+
+        pm_xml, n = re.subn(r'<snippet\b[^>]*>.*?</snippet>', '', pm_xml, flags=re.DOTALL | re.IGNORECASE)
+        stats["snippets"] += n
+        pm_xml, n = re.subn(r'<snippet\b[^>]*/>', '', pm_xml, flags=re.IGNORECASE)
+        stats["snippets"] += n
+
+        pm_xml = re.sub(r'<ExtendedData\b[^>]*>.*?</ExtendedData>', '', pm_xml, flags=re.DOTALL | re.IGNORECASE)
+
+        if conservar_atributos and atributos:
+            stats["placemarks_con_atributos"] += 1
+            stats["atributos_migrados"] += len(atributos)
+
+            if tiene_document:
+                campos_tuple = tuple(dict.fromkeys(k for k, _ in atributos))
+                if campos_tuple not in schemas_por_campos:
+                    schema_id = f"Schema_Atributos_{len(schemas_orden) + 1}"
+                    schemas_por_campos[campos_tuple] = schema_id
+                    schemas_orden.append((schema_id, campos_tuple))
+                else:
+                    schema_id = schemas_por_campos[campos_tuple]
+
+                lines = ['      <ExtendedData>', f'        <SchemaData schemaUrl="#{schema_id}">']
+                for campo, valor in atributos:
+                    c_esc = xml_escape(campo, {'"': '&quot;', "'": '&apos;'})
+                    v_esc = xml_escape(valor)
+                    lines.append(f'          <SimpleData name="{c_esc}">{v_esc}</SimpleData>')
+                lines.append('        </SchemaData>')
+                lines.append('      </ExtendedData>')
+                ext_block = "\n" + "\n".join(lines) + "\n"
+            else:
+                lines = ['      <ExtendedData>']
+                for campo, valor in atributos:
+                    c_esc = xml_escape(campo, {'"': '&quot;', "'": '&apos;'})
+                    v_esc = xml_escape(valor)
+                    lines.append(f'        <Data name="{c_esc}"><value>{v_esc}</value></Data>')
+                lines.append('      </ExtendedData>')
+                ext_block = "\n" + "\n".join(lines) + "\n"
+
+            # Insertar <ExtendedData> antes de la geometría (orden oficial OGC KML 2.2)
+            geom_match = re.search(r'<(?:MultiGeometry|Polygon|LineString|Point|Model|gx:Track)\b', pm_xml, flags=re.IGNORECASE)
+            if geom_match:
+                pos = geom_match.start()
+                pm_xml = pm_xml[:pos] + ext_block.lstrip("\n") + "      " + pm_xml[pos:]
+            else:
+                pm_xml = re.sub(r'</Placemark>\s*$', ext_block + '    </Placemark>', pm_xml, flags=re.IGNORECASE)
+
+        return pm_xml
+
+    kml_text = re.sub(
+        r'<Placemark\b[^>]*>.*?</Placemark>',
+        _procesar_placemark,
+        kml_text,
+        flags=re.DOTALL | re.IGNORECASE
+    )
+
+    if conservar_atributos and tiene_document and schemas_orden:
+        schema_blocks = []
+        for schema_id, campos_tuple in schemas_orden:
+            s_lines = [f'  <Schema name="{schema_id}" id="{schema_id}">']
+            for campo in campos_tuple:
+                c_esc = xml_escape(campo, {'"': '&quot;', "'": '&apos;'})
+                s_lines.append(f'    <SimpleField type="string" name="{c_esc}"/>')
+            s_lines.append('  </Schema>')
+            schema_blocks.append("\n".join(s_lines))
+
+        all_schemas_xml = "\n" + "\n".join(schema_blocks) + "\n"
+        first_container = re.search(r'(<(?:Folder|Placemark)\b[^>]*>)', kml_text, flags=re.IGNORECASE)
+        if first_container:
+            pos = first_container.start()
+            kml_text = kml_text[:pos] + all_schemas_xml.lstrip("\n") + "  " + kml_text[pos:]
+        else:
+            kml_text = re.sub(
+                r'(<Document\b[^>]*>)',
+                lambda m: m.group(1) + all_schemas_xml,
+                kml_text,
+                count=1,
+                flags=re.IGNORECASE
+            )
+
+    # Limpiar <description> y <Snippet> restantes (Document / Folder)
     kml_text, n = re.subn(r'<description\b[^>]*>.*?</description>', '', kml_text, flags=re.DOTALL | re.IGNORECASE)
     stats["descriptions"] += n
     kml_text, n = re.subn(r'<description\b[^>]*/>', '', kml_text, flags=re.IGNORECASE)
     stats["descriptions"] += n
 
-    # 2. Eliminar <Snippet>...</Snippet> y <Snippet/>
     kml_text, n = re.subn(r'<snippet\b[^>]*>.*?</snippet>', '', kml_text, flags=re.DOTALL | re.IGNORECASE)
     stats["snippets"] += n
     kml_text, n = re.subn(r'<snippet\b[^>]*/>', '', kml_text, flags=re.IGNORECASE)
     stats["snippets"] += n
 
-    # 3. Eliminar <BalloonStyle>...</BalloonStyle>
+    # Eliminar <BalloonStyle> para que Google Earth muestre la tabla nativa de ExtendedData
     kml_text, n = re.subn(r'<BalloonStyle\b[^>]*>.*?</BalloonStyle>', '', kml_text, flags=re.DOTALL | re.IGNORECASE)
     stats["balloon_styles"] += n
 
-    # 4. Eliminar <ExtendedData>...</ExtendedData>
-    kml_text, n = re.subn(r'<ExtendedData\b[^>]*>.*?</ExtendedData>', '', kml_text, flags=re.DOTALL | re.IGNORECASE)
-    stats["extended_data"] += n
-
-    # 5. Eliminar <NetworkLink>...</NetworkLink>
+    # Eliminar <NetworkLink> y <atom:link>
     kml_text, n = re.subn(r'<NetworkLink\b[^>]*>.*?</NetworkLink>', '', kml_text, flags=re.DOTALL | re.IGNORECASE)
     stats["network_links"] += n
 
-    # 6. Eliminar etiquetas <atom:link ...>
     kml_text = re.sub(r'<atom:link\b[^>]*>.*?</atom:link>', '', kml_text, flags=re.DOTALL | re.IGNORECASE)
     kml_text = re.sub(r'<atom:link\b[^>]*/>', '', kml_text, flags=re.IGNORECASE)
 
-    # 7. Eliminar <href> externos (http://, https://, ftp://, file://) manteniendo íconos locales embebidos
+    # Eliminar <href> externos manteniendo íconos locales embebidos
     kml_text, n = re.subn(
         r'<href\b[^>]*>\s*(?:https?|ftp|file)://.*?</href>',
         '',
@@ -81,27 +297,25 @@ def _limpiar_contenido_kml(kml_text):
         flags=re.DOTALL | re.IGNORECASE
     )
     stats["external_hrefs"] += n
-
-    # Limpiar contenedores <Icon> vacíos
     kml_text = re.sub(r'<Icon\b[^>]*>\s*</Icon>', '', kml_text, flags=re.IGNORECASE)
 
-    # Compactar líneas vacías consecutivas
     kml_text = re.sub(r'\n[ \t]*\n+', '\n', kml_text)
 
     return kml_text, stats
 
 
-def _limpiar_archivo_kmz(kmz_origen, kmz_destino):
+def _limpiar_archivo_kmz(kmz_origen, kmz_destino, conservar_atributos=True):
     """
-    Descomprime el KMZ, limpia los archivos .kml internos, valida el XML
-    y vuelve a comprimir en el archivo KMZ destino.
+    Descomprime el KMZ, migra atributos a ExtendedData, limpia los archivos .kml internos,
+    valida el XML y vuelve a comprimir en el archivo KMZ destino.
     """
     temp_dir = tempfile.mkdtemp(prefix="kmz_clean_")
     stats_totales = {
         "descriptions": 0,
+        "atributos_migrados": 0,
+        "placemarks_con_atributos": 0,
         "snippets": 0,
         "balloon_styles": 0,
-        "extended_data": 0,
         "network_links": 0,
         "external_hrefs": 0
     }
@@ -124,9 +338,11 @@ def _limpiar_archivo_kmz(kmz_origen, kmz_destino):
                         with open(kml_path, 'r', encoding='latin-1') as f:
                             contenido = f.read()
 
-                    contenido_limpio, st = _limpiar_contenido_kml(contenido)
+                    contenido_limpio, st = _limpiar_contenido_kml(
+                        contenido,
+                        conservar_atributos=conservar_atributos
+                    )
 
-                    # Verificar integridad XML
                     try:
                         ET.fromstring(contenido_limpio.encode('utf-8'))
                     except ET.ParseError as pe:
@@ -156,7 +372,6 @@ def _limpiar_archivo_kmz(kmz_origen, kmz_destino):
 
 
 def _resolver_capa_en_mapa(item, mapa_activo):
-    """Resuelve una referencia de capa al objeto arcpy.mp.Layer del mapa activo si existe."""
     if not isinstance(item, str):
         return item
 
@@ -173,7 +388,6 @@ def _resolver_capa_en_mapa(item, mapa_activo):
 
 
 def _obtener_nombre_capa(item):
-    """Obtiene el nombre base de una capa o ruta."""
     if hasattr(item, "name"):
         return item.name
     texto = str(item).strip().strip("'\"")
@@ -196,15 +410,15 @@ class ExportarCapasKmzLimpio(object):
         self.label = "Exportar Capas / Group Layers a KMZ Limpio (Sin Hipervínculos)"
         self.description = (
             "Exporta una o varias capas vectoriales y/o Group Layers a archivos KMZ "
-            "eliminando completamente el contenido de la pestaña Descripción y cualquier "
-            "hipervínculo o enlace externo, conservando geometría vectorial pura y simbología."
+            "dejando vacía la pestaña Descripción y eliminando hipervínculos o enlaces "
+            "externos, mientras conserva la tabla de atributos completa en ExtendedData/SchemaData."
         )
         self.canRunInBackground = False
 
     def getParameterInfo(self):
         """Definición de parámetros de la herramienta."""
 
-        # 0: Capas o Group Layers de entrada (selección múltiple)
+        # 0: Capas o Group Layers de entrada
         param_capas = arcpy.Parameter(
             displayName="Capas o Group Layers a Exportar",
             name="capas_entrada",
@@ -223,7 +437,17 @@ class ExportarCapasKmzLimpio(object):
             direction="Input"
         )
 
-        # 2: Opción para desglosar Group Layers
+        # 2: Conservar tabla de atributos en ExtendedData
+        param_atributos = arcpy.Parameter(
+            displayName="Conservar tabla de atributos en ExtendedData (pestaña Descripción vacía)",
+            name="conservar_atributos",
+            datatype="GPBoolean",
+            parameterType="Optional",
+            direction="Input"
+        )
+        param_atributos.value = True
+
+        # 3: Opción para desglosar Group Layers
         param_desglosar = arcpy.Parameter(
             displayName="Desglosar Group Layers en archivos KMZ individuales por cada subcapa",
             name="desglosar_grupos",
@@ -233,7 +457,7 @@ class ExportarCapasKmzLimpio(object):
         )
         param_desglosar.value = False
 
-        # 3: Solo subcapas visibles al desglosar
+        # 4: Solo subcapas visibles al desglosar
         param_visibles = arcpy.Parameter(
             displayName="Exportar solo subcapas visibles (cuando se desglosan Group Layers)",
             name="solo_capas_visibles",
@@ -243,7 +467,7 @@ class ExportarCapasKmzLimpio(object):
         )
         param_visibles.value = True
 
-        # 4: Ajustar geometrías al terreno (CLAMPED_TO_GROUND)
+        # 5: Ajustar geometrías al terreno (CLAMPED_TO_GROUND)
         param_clamped = arcpy.Parameter(
             displayName="Ajustar geometrías al terreno (CLAMPED_TO_GROUND)",
             name="clamped_to_ground",
@@ -253,7 +477,7 @@ class ExportarCapasKmzLimpio(object):
         )
         param_clamped.value = True
 
-        # 5: Sobrescribir KMZ existentes
+        # 6: Sobrescribir KMZ existentes
         param_sobrescribir = arcpy.Parameter(
             displayName="Sobrescribir archivos KMZ existentes",
             name="sobrescribir",
@@ -263,7 +487,7 @@ class ExportarCapasKmzLimpio(object):
         )
         param_sobrescribir.value = True
 
-        # 6: Parámetro derivado de salida
+        # 7: Parámetro derivado de salida
         param_salida = arcpy.Parameter(
             displayName="Carpeta de Salida Procesada",
             name="carpeta_resultado",
@@ -274,8 +498,8 @@ class ExportarCapasKmzLimpio(object):
         param_salida.parameterDependencies = [param_carpeta.name]
 
         return [
-            param_capas, param_carpeta, param_desglosar, param_visibles,
-            param_clamped, param_sobrescribir, param_salida
+            param_capas, param_carpeta, param_atributos, param_desglosar,
+            param_visibles, param_clamped, param_sobrescribir, param_salida
         ]
 
     def isLicensed(self):
@@ -283,7 +507,7 @@ class ExportarCapasKmzLimpio(object):
 
     def updateParameters(self, parameters):
         """Habilita el filtro de visibilidad solo cuando se activa desglosar Group Layers."""
-        parameters[3].enabled = bool(parameters[2].value)
+        parameters[4].enabled = bool(parameters[3].value)
 
     def updateMessages(self, parameters):
         return
@@ -292,17 +516,17 @@ class ExportarCapasKmzLimpio(object):
         """Ejecución principal de la exportación y limpieza."""
         capas_entrada = parameters[0].values or []
         carpeta_salida = parameters[1].valueAsText
-        desglosar_grupos = bool(parameters[2].value)
-        solo_visibles = bool(parameters[3].value)
-        clamped_to_ground = bool(parameters[4].value)
-        sobrescribir = bool(parameters[5].value) or (hasattr(arcpy, "env") and bool(arcpy.env.overwriteOutput))
+        conservar_atributos = bool(parameters[2].value) if parameters[2].value is not None else True
+        desglosar_grupos = bool(parameters[3].value)
+        solo_visibles = bool(parameters[4].value)
+        clamped_to_ground = bool(parameters[5].value)
+        sobrescribir = bool(parameters[6].value) or (hasattr(arcpy, "env") and bool(arcpy.env.overwriteOutput))
 
-        parameters[6].value = carpeta_salida
+        parameters[7].value = carpeta_salida
 
         if not os.path.isdir(carpeta_salida):
             os.makedirs(carpeta_salida, exist_ok=True)
 
-        # Resolver mapa activo para detectar Group Layers
         mapa_activo = None
         try:
             aprx = arcpy.mp.ArcGISProject("CURRENT")
@@ -313,10 +537,10 @@ class ExportarCapasKmzLimpio(object):
         arcpy.AddMessage("=" * 65)
         arcpy.AddMessage("EXPORTACIÓN DE CAPAS A KMZ LIMPIO (SIN HIPERVÍNCULOS)")
         arcpy.AddMessage(f"Carpeta destino:        {carpeta_salida}")
+        arcpy.AddMessage(f"Tabla de atributos:     {'Conservada en ExtendedData (Descripción vacía)' if conservar_atributos else 'Eliminada completamente'}")
         arcpy.AddMessage(f"Desglosar Group Layers: {'Sí (KMZ individuales)' if desglosar_grupos else 'No (KMZ agrupado)'}")
         arcpy.AddMessage(f"Ajustar al terreno:     {'CLAMPED_TO_GROUND' if clamped_to_ground else 'ABSOLUTE'}")
         arcpy.AddMessage(f"Sobrescribir:           {'Sí' if sobrescribir else 'No'}")
-        arcpy.AddMessage("Limpieza aplicada:      Pestaña Descripción vacía + sin hipervínculos")
         arcpy.AddMessage("=" * 65)
 
         tareas_exportacion = []
@@ -382,7 +606,6 @@ class ExportarCapasKmzLimpio(object):
                 capa_para_kml = capa_obj
 
                 try:
-                    # Si es ruta a Shapefile/FeatureClass en disco, crear Feature Layer temporal
                     if isinstance(capa_obj, str):
                         ruta_limpia = capa_obj.strip().strip("'\"")
                         if not ruta_limpia.lower().endswith(".lyrx") and arcpy.Exists(ruta_limpia):
@@ -394,7 +617,6 @@ class ExportarCapasKmzLimpio(object):
                                 arcpy.management.MakeFeatureLayer(ruta_limpia, temp_lyr_name)
                                 capa_para_kml = temp_lyr_name
 
-                    # Exportación vectorial pura (NO_COMPOSITE)
                     z_val = "CLAMPED_TO_GROUND" if clamped_to_ground else "ABSOLUTE"
                     try:
                         arcpy.conversion.LayerToKML(
@@ -419,12 +641,16 @@ class ExportarCapasKmzLimpio(object):
                             bool(clamped_to_ground)
                         )
 
-                    # Post-proceso de limpieza total de descripciones e hipervínculos
-                    stats = _limpiar_archivo_kmz(kmz_temporal, kmz_final)
+                    stats = _limpiar_archivo_kmz(
+                        kmz_temporal,
+                        kmz_final,
+                        conservar_atributos=conservar_atributos
+                    )
 
                     arcpy.AddMessage(
                         f"[{idx}/{len(tareas_exportacion)}] EXPORTADO LIMPIO: '{nombre_final}.kmz' "
-                        f"(descripciones eliminadas: {stats['descriptions']}, "
+                        f"(entidades con atributos migrados: {stats['placemarks_con_atributos']}, "
+                        f"descripciones vaciadas: {stats['descriptions']}, "
                         f"enlaces externos eliminados: {stats['external_hrefs'] + stats['network_links']})"
                     )
                     exitosos += 1
@@ -464,8 +690,9 @@ class LimpiarKmzExistentes(object):
         """Herramienta complementaria para limpiar archivos .kmz ya existentes."""
         self.label = "Limpiar Archivos KMZ Existentes (Quitar Descripción e Hipervínculos)"
         self.description = (
-            "Limpia uno o varios archivos .kmz ya existentes eliminando la pestaña "
-            "Descripción y cualquier hipervínculo o enlace externo."
+            "Limpia uno o varios archivos .kmz ya existentes dejando vacía la pestaña "
+            "Descripción y eliminando hipervínculos, conservando la tabla de atributos "
+            "en ExtendedData/SchemaData."
         )
         self.canRunInBackground = False
 
@@ -488,7 +715,16 @@ class LimpiarKmzExistentes(object):
             direction="Input"
         )
 
-        return [param_kmz, param_carpeta_out]
+        param_atributos = arcpy.Parameter(
+            displayName="Conservar tabla de atributos en ExtendedData (pestaña Descripción vacía)",
+            name="conservar_atributos",
+            datatype="GPBoolean",
+            parameterType="Optional",
+            direction="Input"
+        )
+        param_atributos.value = True
+
+        return [param_kmz, param_carpeta_out, param_atributos]
 
     def isLicensed(self):
         return True
@@ -502,12 +738,14 @@ class LimpiarKmzExistentes(object):
     def execute(self, parameters, messages):
         archivos = parameters[0].values or []
         carpeta_destino = parameters[1].valueAsText or None
+        conservar_atributos = bool(parameters[2].value) if parameters[2].value is not None else True
 
         if carpeta_destino:
             os.makedirs(carpeta_destino, exist_ok=True)
 
         arcpy.AddMessage("=" * 65)
         arcpy.AddMessage("LIMPIEZA DE ARCHIVOS KMZ EXISTENTES")
+        arcpy.AddMessage(f"Tabla de atributos: {'Conservada en ExtendedData' if conservar_atributos else 'Eliminada'}")
         arcpy.AddMessage("=" * 65)
 
         limpiados = 0
@@ -526,10 +764,16 @@ class LimpiarKmzExistentes(object):
                 ruta_destino = ruta_origen
 
             try:
-                stats = _limpiar_archivo_kmz(ruta_origen, ruta_destino)
+                stats = _limpiar_archivo_kmz(
+                    ruta_origen,
+                    ruta_destino,
+                    conservar_atributos=conservar_atributos
+                )
                 arcpy.AddMessage(
                     f"[{idx}/{len(archivos)}] LIMPIADO: '{nombre_archivo}' "
-                    f"(descripciones: {stats['descriptions']}, enlaces externos: {stats['external_hrefs'] + stats['network_links']})"
+                    f"(entidades con atributos migrados: {stats['placemarks_con_atributos']}, "
+                    f"descripciones vaciadas: {stats['descriptions']}, "
+                    f"enlaces externos: {stats['external_hrefs'] + stats['network_links']})"
                 )
                 limpiados += 1
             except Exception as e:

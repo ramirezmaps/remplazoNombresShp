@@ -6,11 +6,11 @@ Repositorio con herramientas tipo **Python Toolbox (`.pyt`)** y scripts independ
 
 ## 📦 Herramientas Incluidas en este Repositorio
 
-### 1. `ExportarKmzLimpio.pyt` — Exportar Capas y Group Layers a KMZ sin Hipervínculos (¡NUEVO!)
+### 1. `ExportarKmzLimpio.pyt` — Exportar Capas y Group Layers a KMZ sin Hipervínculos (¡ACTUALIZADO!)
 Exporta capas vectoriales individuales, selecciones múltiples o **Group Layers** completos a archivos `.kmz` limpios para Google Earth y plataformas de validación (como SEA/SEIA):
 
-* **Pestaña Descripción completamente vacía:** Elimina todas las etiquetas `<description>`, `<Snippet>`, `<BalloonStyle>` y `<ExtendedData>` en todos los niveles (Documento, Carpetas y cada entidad/Placemark).
-* **Sin hipervínculos ni enlaces externos:** Elimina enlaces HTML (`<a href>`), `<NetworkLink>`, `<atom:link>` y referencias web externas (`http://`, `https://`, `file://`), conservando intactas las geometrías vectoriales (`NO_COMPOSITE`), nombres, simbología e íconos locales embebidos dentro del KMZ.
+* **Conserva la tabla de atributos sin usar la pestaña Descripción:** Extrae automáticamente todos los campos y valores desde la tabla HTML generada por ArcGIS Pro y los migra al estándar oficial **KML 2.2 (`<Schema>` + `<ExtendedData><SchemaData><SimpleData>`)**. Así, al hacer clic en una entidad en Google Earth se muestra la tabla de atributos limpia y al abrir el KMZ en QGIS/ArcGIS se conservan todas las columnas, mientras que la pestaña **Descripción** en las propiedades de Google Earth queda **100% vacía** (sin HTML ni `xmlns:fo`).
+* **Sin hipervínculos ni enlaces externos:** Elimina todas las etiquetas `<description>`, `<Snippet>`, `<BalloonStyle>`, `<a href>`, URLs (`http://`, `https://`, `www.`, `file://`), `<NetworkLink>`, `<atom:link>` y referencias web externas, conservando intactas las geometrías vectoriales (`NO_COMPOSITE`), nombres, simbología e íconos locales embebidos dentro del KMZ.
 * **Manejo flexible de Group Layers:**
   - Por defecto exporta un Group Layer como un único `.kmz` respetando su estructura de carpetas interna.
   - Con la casilla *"Desglosar Group Layers"*, genera archivos `.kmz` individuales por cada subcapa (con opción de exportar solo las visibles).
