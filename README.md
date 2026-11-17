@@ -1,39 +1,44 @@
 # Herramientas de Automatización para ArcGIS Pro
 
-Repositorio con herramientas tipo **Python Toolbox (`.pyt`)** y scripts independientes para ArcGIS Pro diseñados para automatizar tareas repetitivas sobre shapefiles y layouts en proyectos `.aprx`.
+Repositorio con herramientas tipo **Python Toolbox (`.pyt`)** y scripts independientes para ArcGIS Pro diseñados para automatizar tareas repetitivas sobre shapefiles, layouts `.aprx` y exportaciones KMZ.
 
 ---
 
 ## 📦 Herramientas Incluidas en este Repositorio
 
-### 1. `ReemplazarElementosLayout.pyt` — Modificación y Exportación Masiva de Layouts (¡ACTUALIZADO!)
+### 1. `ExportarKmzLimpio.pyt` — Exportar Capas y Group Layers a KMZ sin Hipervínculos (¡NUEVO!)
+Exporta capas vectoriales individuales, selecciones múltiples o **Group Layers** completos a archivos `.kmz` limpios para Google Earth y plataformas de validación (como SEA/SEIA):
+
+* **Pestaña Descripción completamente vacía:** Elimina todas las etiquetas `<description>`, `<Snippet>`, `<BalloonStyle>` y `<ExtendedData>` en todos los niveles (Documento, Carpetas y cada entidad/Placemark).
+* **Sin hipervínculos ni enlaces externos:** Elimina enlaces HTML (`<a href>`), `<NetworkLink>`, `<atom:link>` y referencias web externas (`http://`, `https://`, `file://`), conservando intactas las geometrías vectoriales (`NO_COMPOSITE`), nombres, simbología e íconos locales embebidos dentro del KMZ.
+* **Manejo flexible de Group Layers:**
+  - Por defecto exporta un Group Layer como un único `.kmz` respetando su estructura de carpetas interna.
+  - Con la casilla *"Desglosar Group Layers"*, genera archivos `.kmz` individuales por cada subcapa (con opción de exportar solo las visibles).
+* **Ajuste al terreno:** Activa `CLAMPED_TO_GROUND` por defecto (opcionalmente configurable a `ABSOLUTE`).
+* **Herramienta extra incluida:** También incorpora *"Limpiar Archivos KMZ Existentes"* dentro del mismo `.pyt` para limpiar archivos `.kmz` que ya tengas generados en disco.
+
+---
+
+### 2. `ReemplazarElementosLayout.pyt` — Modificación y Exportación Masiva de Layouts
 Permite buscar y reemplazar de forma masiva elementos dentro de los layouts y/o **exportar todos los layouts a una carpeta**:
 * **Textos:** Busca y reemplaza palabras, frases, fechas, autores, códigos de proyecto o títulos en cuadros de texto, membretes y notas.
 * **Imágenes / Logos:** Sustituye la ruta del archivo de imagen para actualizar logos de empresas, clientes o encabezados gráficos.
 * **Marcos de Mapa (Map Frames):** Reasigna el mapa asociado al marco de mapa.
-* **Exportación Masiva:** Exporta todos los layouts (o filtrados) a una carpeta en formato **PDF**, **JPEG**, **PNG** o **TIFF** con resolución (DPI) personalizable.
-* **Modo `clip_to_elements = True`:** Ajusta la extensión del archivo exportado estrictamente a los límites de los elementos del layout (evitando márgenes o áreas vacías no deseadas fuera del contenido). Activado por defecto en la interfaz y en el código.
-
-**Modos de uso:**
-- **Solo Exportar:** Selecciona la acción *"Ninguno (Solo Exportar)"*, elige la carpeta de salida, el formato (ej. PDF) y los DPI para generar los archivos de todos los layouts de una sola vez.
-- **Reemplazar y Exportar:** Puedes reemplazar textos o logos y al mismo tiempo indicar la carpeta de exportación para obtener los layouts ya actualizados y listos para entrega.
-- **Alcance flexible:** Aplica a `* (Todos los Layouts)` del proyecto o permite seleccionar uno específico desde un desplegable.
-- **Proyecto activo o externo:** Funciona por defecto sobre el proyecto abierto (`"CURRENT"`) o seleccionando un archivo `.aprx` en disco.
+* **Exportación Masiva:** Exporta todos los layouts (o filtrados) a una carpeta en formato **PDF**, **JPEG**, **PNG** o **TIFF** con resolución (DPI) personalizable y `clip_to_elements = True` activado por defecto.
 
 ---
 
-### 2. `ReemplazarTextoShp.pyt` — Reemplazo de texto en nombres de Shapefiles
+### 3. `ReemplazarTextoShp.pyt` — Reemplazo de texto en nombres de Shapefiles
 Busca un patrón o fragmento de texto en los nombres de shapefiles de una carpeta y lo reemplaza por otro valor definido por el usuario (o lo elimina).
 
 * **Opciones:**
-  - Renombrar en la misma carpeta original (*in-place*).
-  - Guardar copias renombradas en una nueva carpeta de destino (conservando los originales).
-  - Opción de sobrescribir archivos si el nombre destino ya existiera.
+  - Renombrar en la misma carpeta original (*in-place*) o guardar copias en una nueva carpeta de destino.
+  - Sobrescribir archivos existentes si es necesario.
   - Renombra automáticamente todos los componentes asociados: `.shp`, `.shx`, `.dbf`, `.prj`, `.cpg`, `.sbn`, `.sbx`, `.shp.xml`, `.qpj`, etc.
 
 ---
 
-### 3. `RenombrarShapefiles.pyt` — Renombrado masivo mediante tabla Excel
+### 4. `RenombrarShapefiles.pyt` — Renombrado masivo mediante tabla Excel
 Renombra múltiples shapefiles según una tabla de equivalencias en Excel (`.xlsx` o `.xls`).
 
 * **Opciones:**
@@ -49,6 +54,7 @@ Renombra múltiples shapefiles según una tabla de equivalencias en Excel (`.xls
 2. Abre el panel **Catalog** (*Catálogo*).
 3. Haz clic derecho sobre la carpeta **Toolboxes** (*Cajas de herramientas*) -> **Add Toolbox** (*Agregar caja de herramientas*).
 4. Elige la herramienta deseada:
+   - `ExportarKmzLimpio.pyt`
    - `ReemplazarElementosLayout.pyt`
    - `ReemplazarTextoShp.pyt`
    - `RenombrarShapefiles.pyt`
@@ -59,6 +65,7 @@ Renombra múltiples shapefiles según una tabla de equivalencias en Excel (`.xls
 ## 💻 Ejecución desde Consola o Terminal (Python)
 
 Todos los toolboxes cuentan con sus scripts complementarios ejecutables desde consola:
+- `exportar_kmz_limpio.py` (incluye modo CLI para limpiar archivos `.kmz` existentes: `python exportar_kmz_limpio.py -i "mi_archivo.kmz"`)
 - `reemplazar_elementos_layout.py`
 - `reemplazar_texto_shp.py`
 - `renombrar_shp.py`
